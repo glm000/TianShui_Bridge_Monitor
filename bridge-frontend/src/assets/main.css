@@ -1,0 +1,16 @@
+/* src/assets/main.css */
+/* 强制覆盖所有默认边距 */
+#app {
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100vw;
+  height: 100vh;
+  display: block; /* 防止 flex 布局影响 */
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  /* background-color: #050a15; 补上这一层底色，双重保险 */
+}
