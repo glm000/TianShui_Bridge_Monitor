@@ -22,6 +22,7 @@ const mockTask = require('./utils/mockTask') // 那个自动造假数据的“�
 const bridgeRoutes = require('./routes/bridgeRoutes') // 桥梁业务相关路由
 const dataRoutes = require('./routes/dataRoutes') // 数据业务相关路由
 const userRoutes = require('./routes/userRoutes') // 用户业务相关路由
+const dashboardRoutes = require('./routes/dashboardRoutes') // 监控大屏相关路由
 
 const app = express() // 创建一个 Express 应用实例
 const PORT = process.env.PORT || 3000
@@ -33,6 +34,7 @@ app.use(bodyParser.json()) // 解析 JSON 请求体，前端发过来的数据�
 app.use('/api/bridge', bridgeRoutes) //如果前端的请求是以 /api/bridge 开头的，就让他去找 bridgeRoutes
 app.use('/api/data', dataRoutes) //如果前端的请求是以 /api/data 开头的，去找 dataRoutes
 app.use('/api/user', userRoutes) //如果前端的请求是以 /api/user 开头的，去找 userRoutes
+app.use('/api/dashboard', dashboardRoutes) //如果前端的请求是以 /api/dashboard 开头的，去找 dashboardRoutes
 
 /*
  * 启动那个每10秒造一次数据的机器人
@@ -50,5 +52,6 @@ app.listen(PORT, () => {
   console.log(`🌳 拓扑接口:   http://localhost:${PORT}/api/bridge/tree`)
   console.log(`📈 历史数据:   http://localhost:${PORT}/api/data/history?code=B1_MID_STR_01`)
   console.log(`👤 登录接口:   http://localhost:${PORT}/api/user/login (POST)`)
+  console.log(`📊 大屏概览:   http://localhost:${PORT}/api/dashboard/overview`)
   console.log(`==================================================\n`)
 })

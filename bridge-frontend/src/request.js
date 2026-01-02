@@ -8,3 +8,8 @@ const baseUrl = 'http://localhost:3000'
 export const post = (url, data) => {
   return axios.post(baseUrl + url, data)
 }
+
+// GET请求方法，用于获取数据
+export const get = (url, params) => {
+  return axios.get(baseUrl + url, { params })
+}
