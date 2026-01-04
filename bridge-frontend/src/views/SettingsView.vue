@@ -892,8 +892,6 @@ const getSensorTypeTag = (type) => {
 // ===================== 生命周期 =====================
 onMounted(() => {
   buildTreeData()
-  // 默认显示桥梁列表
-  currentLevel.value = 'bridge'
   loadBridges()
 })
 </script>
