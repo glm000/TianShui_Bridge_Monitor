@@ -18,7 +18,7 @@ exports.getSensorHistory = async (req, res) => {
 exports.getAlarms = async (req, res) => {
   try {
     const sql = `
-            SELECT a.*, s.sensor_name, s.sensor_code, b.name as bridge_name 
+            SELECT a.*, s.sensor_name, s.sensor_code, b.name as bridge_name , b.id as bridge_id
             FROM alarms a
             JOIN sensors s ON a.sensor_id = s.id
             JOIN sections sec ON s.section_id = sec.id
