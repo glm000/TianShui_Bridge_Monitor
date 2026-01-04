@@ -644,16 +644,21 @@ onUnmounted(() => {
 <style scoped>
 .dashboard-container {
   color: rgba(255, 255, 255, 0.92);
-  flex: 1;
-  width: 100%; /* 宽度也占满（可选，flex布局下默认宽度拉伸） */
-  height: 100%-500px;
+  width: 100%;
+  height: 100%; /* 修复：使用100%而不是100%-500px */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* 禁止滚动 */
+  box-sizing: border-box;
 }
 
 .toolbar {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
   gap: 16px;
+
+  flex-shrink: 0; /* 工具栏不收缩 */
+  display: flex;
+  align-items: center;
 
   padding: 12px 14px;
   border-radius: 12px;
@@ -690,6 +695,7 @@ onUnmounted(() => {
 
 /* 统计卡片 */
 .stats-cards {
+  flex-shrink: 0; /* 统计卡片区不收缩 */
   display: flex;
   gap: 16px;
   margin-bottom: 16px;
@@ -739,11 +745,13 @@ onUnmounted(() => {
 }
 
 /* 主体内容区 */
+/* 内部各区块使用flex自适应 */
 .main-content {
   display: flex;
   gap: 16px;
   margin-bottom: 16px;
-  height: clamp(420px, 52vh, 640px);
+  flex: 1; /* 填充剩余空间 */
+  min-height: 0; /* 重要！允许flex子元素收缩 */
 }
 
 .left-panel,
@@ -754,18 +762,19 @@ onUnmounted(() => {
   padding: 16px;
   box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
   backdrop-filter: blur(10px);
-}
-
-.left-panel {
-  width: clamp(360px, 22vw, 520px);
   display: flex;
   flex-direction: column;
+  min-height: 0; /* 允许收缩 */
+}
+
+/* 左右面板也需要自适应 */
+.left-panel {
+  width: clamp(360px, 22vw, 520px);
+  flex-shrink: 0;
 }
 
 .right-panel {
   flex: 1;
-  display: flex;
-  flex-direction: column;
 }
 
 .panel-title {
@@ -780,7 +789,7 @@ onUnmounted(() => {
 .sensors-list {
   flex: 1;
   overflow-y: auto;
-  position: relative;
+  min-height: 0; /* 允许收缩 */
 }
 
 /* 虚拟列表占位 */
@@ -880,11 +889,11 @@ onUnmounted(() => {
 }
 
 /* 右侧图表 */
+/* 图表容器自适应 */
 .chart-container {
   flex: 1;
-  position: relative;
+  min-height: 0; /* 允许收缩 */
 }
-
 .chart {
   width: 100%;
   height: 100%;
@@ -897,7 +906,7 @@ onUnmounted(() => {
   font-size: 14px;
 }
 
-/* 告警面板 */
+/* 告警面板 - 使用flex-shrink控制 */
 .alarms-panel {
   background: rgba(10, 18, 36, 0.45);
   border: 1px solid rgba(64, 243, 255, 0.18);
@@ -905,7 +914,8 @@ onUnmounted(() => {
   padding: 16px;
   box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
   backdrop-filter: blur(10px);
-  height: 190px;
+  flex-shrink: 0; /* 不收缩 */
+  height: 190px; /* 保持固定高度 */
   display: flex;
   flex-direction: column;
 }
@@ -913,6 +923,7 @@ onUnmounted(() => {
 .alarms-list {
   flex: 1;
   overflow-y: auto;
+  min-height: 0;
 }
 
 /* 告警：栅格对齐 + 省略号（行高46，节距54） */

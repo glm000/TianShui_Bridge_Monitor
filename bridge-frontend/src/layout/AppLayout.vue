@@ -525,12 +525,14 @@ const handleLogout = () => {
   white-space: nowrap;
 }
 
-/* ===== Main ===== */
+/* ========== 内容区域 ========== */
 .app-main {
-  position: relative;
-  padding: 18px;
-  overflow-y: auto;
-  background: transparent;
+  background-color: #f0f2f5;
+  padding: 0; /* 大屏模式去掉内边距 */
+  overflow: hidden; /* 禁止滚动 */
+  flex: 1; /* 填满剩余空间 */
+  display: flex;
+  flex-direction: column;
 }
 
 .app-main::before {
