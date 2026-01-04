@@ -265,13 +265,15 @@ exports.getDistribution = async (req, res) => {
       return res.json({ success: true, data: [] })
     }
 
-    const range = max_val - min_val
+    const minVal = parseFloat(min_val)
+    const maxVal = parseFloat(max_val)
+    const range = maxVal - minVal
     const binWidth = range / bins
 
     // 构建分布查询
     let sql = `
       SELECT 
-        FLOOR((value - ${min_val}) / ${binWidth}) as bin_index,
+        FLOOR((value - ${minVal}) / ${binWidth}) as bin_index,
         COUNT(*) as count
       FROM sensor_data
       WHERE sensor_code = ?
@@ -294,8 +296,8 @@ exports.getDistribution = async (req, res) => {
     // 构建完整的分布数据
     const distribution = []
     for (let i = 0; i < bins; i++) {
-      const rangeStart = min_val + i * binWidth
-      const rangeEnd = i === bins - 1 ? max_val : rangeStart + binWidth
+      const rangeStart = minVal + i * binWidth
+      const rangeEnd = i === bins - 1 ? maxVal : rangeStart + binWidth
       const found = rows.find(r => parseInt(r.bin_index) === i)
       
       distribution.push({
