@@ -27,9 +27,13 @@ const router = createRouter({
           name: 'settings',
           component: () => import('../views/SettingsView.vue'),
           meta: { title: '系统设置' }
+        },
+        {
+          path: 'analysis',
+          name: 'analysis',
+          component: () => import('../views/AnalysisView.vue'),
+          meta: { title: '数据分析' }
         }
-        // 这里预留其他页面的坑位
-        // { path: 'analysis', component: ... }
       ]
     }
   ]
