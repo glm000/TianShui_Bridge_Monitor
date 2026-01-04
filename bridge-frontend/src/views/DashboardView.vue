@@ -1,25 +1,10 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
+import { ref, computed, shallowRef, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import * as echarts from 'echarts'
 import { getOverview, getBridgesWithSensors, getRealTimeData, getSensorLatest, getAlarms } from '../api/dashboard.js'
 
-// ========= 工具 =========
-const chunk = (arr, size) => {
-  const res = []
-  for (let i = 0; i < arr.length; i += size) res.push(arr.slice(i, i + size))
-  return res
-}
-const clampIndex = (idx, len) => (len <= 0 ? 0 : Math.max(0, Math.min(idx, len - 1)))
-
-const formatHms = date => {
-  const d = date instanceof Date ? date : new Date(date)
-  if (Number.isNaN(d.getTime())) return '--:--:--'
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
-}
-
-// ========= 数据状态 =========
+// ========== 状态 ==========
 const currentTime = ref('')
-const lastRefreshTime = ref('')
 const overview = ref({
   bridgeCount: 0,
   sensorCount: 0,
@@ -37,188 +22,89 @@ const alarmsList = ref([])
 
 const selectedSensorCode = ref(null)
 
-// 大屏轮巡开关
-const autoRotateBridge = ref(true)
-const autoRotateSensor = ref(true)
+const chartEl = ref(null)
+const chartInstance = shallowRef(null)
 
-// 分页轮播配置
-const sensorPageSize = ref(12)
-const alarmPageSize = ref(8)
+const refreshing = ref(false)
 
-// 当前页索引（各表独立轮播）
-const allSensorsPageIndex = ref(0)
-const exceededPageIndex = ref(0)
-const offlinePageIndex = ref(0)
-const alarmPageIndex = ref(0)
-
-// 图表轮播索引
-const chartSlideIndex = ref(0)
-
-// 图表 DOM & 实例
-const realtimeChartEl = ref(null)
-const alarmTrendChartEl = ref(null)
-const typePieChartEl = ref(null)
-const sectionMultiChartEl = ref(null)
-
-let realtimeChart = null
-let alarmTrendChart = null
-let typePieChart = null
-let sectionMultiChart = null
-
-const maxSectionSeries = ref(6)
-const lastSectionChartUpdateAt = ref(0)
-const minSectionChartIntervalMs = 20000
-
-// timers
 let timeTimer = null
 let refreshTimer = null
-let bridgeRotateTimer = null
-let sensorRotateTimer = null
-let pageRotateTimer = null
-let resizeHandler = null
 
-// ========= 计算属性 =========
+// ========== 计算属性 ==========
 const currentBridge = computed(() => {
   if (!selectedBridgeId.value) return null
   return bridgesData.value.find(b => b.id === selectedBridgeId.value) || null
 })
 
-const flatSensors = computed(() => {
-  if (!currentBridge.value) return []
-  const res = []
-  currentBridge.value.sections?.forEach(section => {
-    section.sensors?.forEach(sensor => {
-      const rt = realtimeData.value.find(r => r.sensor_code === sensor.sensor_code)
-      const value = rt?.value ?? null
-      const isOnline = rt && value !== null && value !== undefined && value !== ''
-      res.push({
-        ...sensor,
-        section_name: section.name,
-        realtime: rt || null,
-        realtime_value: value,
-        is_online: !!isOnline
-      })
-    })
-  })
-  return res
+const realtimeMap = computed(() => {
+  const m = new Map()
+  for (const it of realtimeData.value) m.set(it.sensor_code, it)
+  return m
 })
 
-const offlineSensors = computed(() => flatSensors.value.filter(s => !s.is_online))
-
-const isSensorExceeded = sensorLike => {
-  if (!sensorLike) return false
-  const v = sensorLike.realtime_value ?? sensorLike.value
-  if (v === undefined || v === null || v === '') return false
-  const val = parseFloat(v)
+const isSensorExceeded = (sensorMeta, realtimeVal) => {
+  if (realtimeVal === undefined || realtimeVal === null || realtimeVal === '--') return false
+  const val = Number(realtimeVal)
   if (Number.isNaN(val)) return false
 
-  const max = sensorLike.limit_max
-  const min = sensorLike.limit_min
-  if (max !== undefined && max !== null && max !== '' && val > parseFloat(max)) return true
-  if (min !== undefined && min !== null && min !== '' && val < parseFloat(min)) return true
+  const hasMax = sensorMeta?.limit_max !== undefined && sensorMeta?.limit_max !== null && sensorMeta?.limit_max !== ''
+  const hasMin = sensorMeta?.limit_min !== undefined && sensorMeta?.limit_min !== null && sensorMeta?.limit_min !== ''
+
+  if (hasMax && val > Number(sensorMeta.limit_max)) return true
+  if (hasMin && val < Number(sensorMeta.limit_min)) return true
   return false
 }
 
-const exceededSensors = computed(() => {
-  const res = flatSensors.value
-    .filter(s => s.is_online && isSensorExceeded(s))
-    .map(s => {
-      const val = parseFloat(s.realtime_value)
-      const max = s.limit_max !== undefined && s.limit_max !== null && s.limit_max !== '' ? parseFloat(s.limit_max) : null
-      const min = s.limit_min !== undefined && s.limit_min !== null && s.limit_min !== '' ? parseFloat(s.limit_min) : null
-      let exceed = 0
-      if (max !== null && !Number.isNaN(max) && val > max) exceed = val - max
-      if (min !== null && !Number.isNaN(min) && val < min) exceed = min - val
-      return { ...s, exceed }
+const viewSections = computed(() => {
+  const b = currentBridge.value
+  if (!b?.sections?.length) return []
+
+  return b.sections.map(sec => ({
+    ...sec,
+    viewSensors: (sec.sensors || []).map(s => {
+      const rt = realtimeMap.value.get(s.sensor_code)
+      const val = rt?.value ?? null
+      return {
+        ...s,
+        rt,
+        displayValue: val ?? '--',
+        exceeded: isSensorExceeded(s, val)
+      }
     })
-    .sort((a, b) => b.exceed - a.exceed)
-  return res
+  }))
 })
 
-const sensorTypeStats = computed(() => {
-  const map = new Map()
-  flatSensors.value.forEach(s => {
-    const k = s.sensor_type || 'unknown'
-    map.set(k, (map.get(k) || 0) + 1)
-  })
-  return Array.from(map.entries()).map(([type, count]) => ({ type, count }))
+const firstSensorCodeInCurrentBridge = computed(() => {
+  return viewSections.value?.[0]?.viewSensors?.[0]?.sensor_code || null
 })
 
-const offlineCount = computed(() => offlineSensors.value.length)
-const exceededCount = computed(() => exceededSensors.value.length)
-
-// 表格分页数据
-const allSensorsPages = computed(() => chunk(flatSensors.value, sensorPageSize.value))
-const exceededPages = computed(() => chunk(exceededSensors.value, sensorPageSize.value))
-const offlinePages = computed(() => chunk(offlineSensors.value, sensorPageSize.value))
-const alarmPages = computed(() => chunk(alarmsList.value, alarmPageSize.value))
-
-const allSensorsPage = computed(() => allSensorsPages.value[clampIndex(allSensorsPageIndex.value, allSensorsPages.value.length)] || [])
-const exceededPage = computed(() => exceededPages.value[clampIndex(exceededPageIndex.value, exceededPages.value.length)] || [])
-const offlinePage = computed(() => offlinePages.value[clampIndex(offlinePageIndex.value, offlinePages.value.length)] || [])
-const alarmPage = computed(() => alarmPages.value[clampIndex(alarmPageIndex.value, alarmPages.value.length)] || [])
-
-// 选中传感器所在断面（用于“断面多传感器叠加曲线”）
-const selectedSection = computed(() => {
-  const bridge = currentBridge.value
-  if (!bridge?.sections?.length) return null
-
+const selectedSensorMeta = computed(() => {
   const code = selectedSensorCode.value
-  if (code) {
-    for (const section of bridge.sections) {
-      if (section?.sensors?.some(s => s.sensor_code === code)) return section
-    }
+  if (!code) return null
+  for (const sec of viewSections.value) {
+    const s = sec.viewSensors?.find(x => x.sensor_code === code)
+    if (s) return s
   }
-  return bridge.sections[0] || null
+  return null
 })
 
-const sectionSensorsForChart = computed(() => {
-  const sensors = selectedSection.value?.sensors || []
-  return sensors.slice(0, maxSectionSeries.value)
-})
-
-// ========= 全局滚动条（超限/离线摘要） =========
-const tickerItems = computed(() => {
-  const items = []
-
-  // 超限摘要（取前 10）
-  exceededSensors.value.slice(0, 10).forEach(s => {
-    const val = s.realtime_value ?? '--'
-    const max = s.limit_max ?? '--'
-    const min = s.limit_min ?? '--'
-    items.push(`【超限】${s.section_name}-${s.sensor_name}(${s.sensor_code})=${val}${s.unit || ''} [min:${min} max:${max}]`)
-  })
-
-  // 离线摘要（取前 12）
-  offlineSensors.value.slice(0, 12).forEach(s => {
-    items.push(`【离线】${s.section_name}-${s.sensor_name}(${s.sensor_code})`)
-  })
-
-  return items
-})
-
-const tickerIsStatic = computed(() => tickerItems.value.length === 0)
-
-const tickerText = computed(() => {
-  if (tickerIsStatic.value) return '系统运行正常：暂无超限/离线点位'
-  return tickerItems.value.join('   ｜   ')
-})
-
-const marqueeDuration = computed(() => {
-  // 文本越长滚动越慢（更易读）
-  const len = tickerText.value.length
-  // 经验值：大概每秒滚 6~10 个字符的观感
-  const duration = Math.round(Math.max(14, Math.min(48, len / 6)))
-  return duration
-})
-
-// ========= 显示映射 =========
+// ========== 展示工具 ==========
 const getSensorTypeName = type => {
-  const typeMap = { strain: '应变', disp: '位移', press: '压力', vib: '振动', rebar: '钢筋应力' }
-  return typeMap[type] || type || '--'
+  const typeMap = {
+    strain: '应变',
+    disp: '位移',
+    press: '压力',
+    vib: '振动',
+    rebar: '钢筋应力'
+  }
+  return typeMap[type] || type
 }
 
-// ========= 方法 =========
+const formatNum = v => {
+  const n = Number(v)
+  return Number.isFinite(n) ? n.toFixed(2) : '--'
+}
+
 const updateTime = () => {
   const now = new Date()
   currentTime.value = now.toLocaleString('zh-CN', {
@@ -232,905 +118,884 @@ const updateTime = () => {
   })
 }
 
-const markRefreshTime = () => {
-  const now = new Date()
-  lastRefreshTime.value = now.toLocaleString('zh-CN', { hour12: false })
-}
-
+// ========== API ==========
 const loadOverview = async () => {
-  const res = await getOverview()
-  if (res.data?.success) overview.value = res.data.data
+  try {
+    const res = await getOverview()
+    if (res.data?.success) overview.value = res.data.data
+  } catch (err) {
+    console.error('加载概览数据失败:', err)
+  }
 }
 
 const loadBridgesData = async () => {
-  const res = await getBridgesWithSensors()
-  if (res.data?.success) {
-    bridgesData.value = res.data.data || []
-    if (bridgesData.value.length > 0 && !selectedBridgeId.value) {
-      selectedBridgeId.value = bridgesData.value[0].id
+  try {
+    const res = await getBridgesWithSensors()
+    if (res.data?.success) {
+      bridgesData.value = res.data.data || []
+      if (bridgesData.value.length > 0 && !selectedBridgeId.value) {
+        selectedBridgeId.value = bridgesData.value[0].id
+      }
     }
+  } catch (err) {
+    console.error('加载桥梁数据失败:', err)
   }
 }
 
 const loadRealtimeData = async () => {
-  const res = await getRealTimeData()
-  if (res.data?.success) realtimeData.value = res.data.data || []
+  try {
+    const res = await getRealTimeData()
+    if (res.data?.success) realtimeData.value = res.data.data || []
+  } catch (err) {
+    console.error('加载实时数据失败:', err)
+  }
 }
 
 const loadAlarms = async () => {
-  const res = await getAlarms()
-  if (res.data?.success) {
-    // 大屏建议多取一些再分页轮播
-    alarmsList.value = (res.data.data || []).slice(0, 50)
-  }
-}
-
-const refreshAllData = async () => {
   try {
-    await Promise.all([loadOverview(), loadRealtimeData(), loadAlarms()])
-    markRefreshTime()
-    updateAlarmTrendChart()
-    updateTypePieChart()
-
-    if (selectedSensorCode.value) {
-      await loadSensorChart(selectedSensorCode.value)
-    }
-
-    // 如果当前停留在“断面叠加曲线”页，则允许按最小间隔刷新一次
-    if (chartSlideIndex.value === 3) {
-      await updateSectionMultiChart(false)
-    }
-  } catch (e) {
-    console.error('刷新失败:', e)
+    const res = await getAlarms()
+    if (res.data?.success) alarmsList.value = (res.data.data || []).slice(0, 10)
+  } catch (err) {
+    console.error('加载告警数据失败:', err)
   }
 }
 
-const pickDefaultSensor = () => {
-  const list = flatSensors.value
-  if (list.length > 0) selectedSensorCode.value = list[0].sensor_code
+// ========== ECharts（阈值线 + 无醒目标记） ==========
+const ensureChart = async () => {
+  await nextTick()
+  if (!chartEl.value) return
+
+  if (chartInstance.value && chartInstance.value.getDom() !== chartEl.value) {
+    chartInstance.value.dispose()
+    chartInstance.value = null
+  }
+  if (!chartInstance.value) chartInstance.value = echarts.init(chartEl.value)
 }
 
-const rotateBridgeOnce = () => {
-  if (!bridgesData.value.length) return
-  const idx = bridgesData.value.findIndex(b => b.id === selectedBridgeId.value)
-  const nextIdx = idx >= 0 ? (idx + 1) % bridgesData.value.length : 0
-  selectedBridgeId.value = bridgesData.value[nextIdx].id
+const buildThreshold = sensorMeta => {
+  const max = sensorMeta?.limit_max
+  const min = sensorMeta?.limit_min
+  const hasMax = max !== undefined && max !== null && max !== ''
+  const hasMin = min !== undefined && min !== null && min !== ''
+  return {
+    hasMax,
+    hasMin,
+    max: hasMax ? Number(max) : null,
+    min: hasMin ? Number(min) : null
+  }
 }
 
-const rotateSensorOnce = () => {
-  const list = flatSensors.value
-  if (!list.length) return
-  const idx = list.findIndex(s => s.sensor_code === selectedSensorCode.value)
-  const nextIdx = idx >= 0 ? (idx + 1) % list.length : 0
-  selectedSensorCode.value = list[nextIdx].sensor_code
-}
+const updateChart = async (times, values, sensorMeta) => {
+  await ensureChart()
+  if (!chartInstance.value) return
 
-// ========= 图表 =========
-const ensureMainCharts = () => {
-  if (!realtimeChart && realtimeChartEl.value) realtimeChart = echarts.init(realtimeChartEl.value)
-  if (!alarmTrendChart && alarmTrendChartEl.value) alarmTrendChart = echarts.init(alarmTrendChartEl.value)
-  if (!typePieChart && typePieChartEl.value) typePieChart = echarts.init(typePieChartEl.value)
-}
+  const sensorCode = sensorMeta?.sensor_code || selectedSensorCode.value || ''
+  const unit = sensorMeta?.unit ? `（${sensorMeta.unit}）` : ''
+  const th = buildThreshold(sensorMeta)
 
-const ensureSectionChart = () => {
-  if (!sectionMultiChart && sectionMultiChartEl.value) sectionMultiChart = echarts.init(sectionMultiChartEl.value)
+  const option = {
+    backgroundColor: 'transparent',
+    title: {
+      text: `传感器 ${sensorCode} 实时数据${unit}`,
+      left: 'center',
+      top: 10,
+      textStyle: { color: '#40f3ff', fontSize: 16 }
+    },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(0, 20, 40, 0.88)',
+      borderColor: '#40f3ff',
+      textStyle: { color: '#fff' },
+      formatter: params => {
+        const p = params?.[0]
+        if (!p) return ''
+        return `${p.axisValue}<br/>数值：${formatNum(p.data)}`
+      }
+    },
+    grid: { left: '8%', right: '5%', top: '20%', bottom: '15%' },
+    xAxis: {
+      type: 'category',
+      data: times,
+      axisLine: { lineStyle: { color: '#40f3ff' } },
+      axisLabel: { color: 'rgba(160, 180, 206, 0.95)' }
+    },
+    yAxis: {
+      type: 'value',
+      axisLine: { lineStyle: { color: '#40f3ff' } },
+      axisLabel: { color: 'rgba(160, 180, 206, 0.95)' },
+      splitLine: { lineStyle: { color: 'rgba(64, 243, 255, 0.08)' } }
+    },
+    series: [
+      {
+        name: '数值',
+        type: 'line',
+        smooth: true,
+        data: values,
+
+        // 最干净：默认不画点
+        showSymbol: true,
+        symbol: 'circle',
+        symbolSize: 6,
+
+        // hover 点按超限着色（如果你也不想要，可改成固定 '#40f3ff'）
+        itemStyle: {
+          color: params => {
+            const v = Number(params.value)
+            const ex = (th.hasMax && v > th.max) || (th.hasMin && v < th.min)
+            return ex ? '#ff4d4f' : '#40f3ff'
+          },
+          borderColor: '#ffffff',
+          borderWidth: 1.2
+        },
+
+        lineStyle: {
+          color: '#40f3ff',
+          width: 2,
+          shadowColor: 'rgba(64, 243, 255, 0.35)',
+          shadowBlur: 10
+        },
+        areaStyle: {
+          color: {
+            type: 'linear',
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 1,
+            colorStops: [
+              { offset: 0, color: 'rgba(64, 243, 255, 0.18)' },
+              { offset: 1, color: 'rgba(64, 243, 255, 0.02)' }
+            ]
+          }
+        },
+
+        // 阈值线（max/min）
+        markLine: {
+          symbol: 'none',
+          silent: true,
+          label: { color: '#ff7875', position: 'end' },
+          lineStyle: { color: '#ff4d4f', type: 'dashed', width: 1.5 },
+          data: [...(th.hasMax ? [{ yAxis: th.max, label: { formatter: `上限：${formatNum(th.max)}` } }] : []), ...(th.hasMin ? [{ yAxis: th.min, label: { formatter: `下限：${formatNum(th.min)}` } }] : [])]
+        }
+      }
+    ]
+  }
+
+  chartInstance.value.setOption(option, { notMerge: true, lazyUpdate: true })
+  chartInstance.value.resize()
 }
 
 const loadSensorChart = async sensorCode => {
   try {
-    ensureMainCharts()
-    if (!realtimeChart) return
-
-    const res = await getSensorLatest(sensorCode, 60)
+    const res = await getSensorLatest(sensorCode, 30)
     const data = res.data?.success ? res.data.data || [] : []
+    const meta = selectedSensorMeta.value
+
     if (!data.length) {
-      realtimeChart.setOption({
-        title: {
-          text: `实时曲线（${sensorCode}，暂无数据）`,
-          left: 'center',
-          top: 10,
-          textStyle: { color: '#00d4ff', fontSize: 14 }
-        },
-        xAxis: { type: 'category', data: [] },
-        yAxis: { type: 'value' },
-        series: [{ type: 'line', data: [] }]
-      })
+      await updateChart([], [], meta)
       return
     }
 
-    const times = data.map(item => formatHms(item.created_at))
-    const values = data.map(item => parseFloat(item.value))
-
-    realtimeChart.setOption({
-      backgroundColor: 'transparent',
-      title: { text: `实时曲线（${sensorCode}）`, left: 'center', top: 10, textStyle: { color: '#00d4ff', fontSize: 14 } },
-      tooltip: { trigger: 'axis', backgroundColor: 'rgba(0, 20, 40, 0.85)', borderColor: '#00d4ff', textStyle: { color: '#fff' } },
-      grid: { left: '8%', right: '5%', top: '18%', bottom: '14%' },
-      xAxis: { type: 'category', data: times, axisLine: { lineStyle: { color: '#00d4ff' } }, axisLabel: { color: '#8899aa' } },
-      yAxis: {
-        type: 'value',
-        axisLine: { lineStyle: { color: '#00d4ff' } },
-        axisLabel: { color: '#8899aa' },
-        splitLine: { lineStyle: { color: 'rgba(0, 212, 255, 0.1)' } }
-      },
-      series: [
-        {
-          name: '数值',
-          type: 'line',
-          smooth: true,
-          data: values,
-          lineStyle: { color: '#00d4ff', width: 2, shadowColor: 'rgba(0, 212, 255, 0.5)', shadowBlur: 10 },
-          itemStyle: { color: '#00d4ff' },
-          areaStyle: {
-            color: {
-              type: 'linear',
-              x: 0,
-              y: 0,
-              x2: 0,
-              y2: 1,
-              colorStops: [
-                { offset: 0, color: 'rgba(0, 212, 255, 0.25)' },
-                { offset: 1, color: 'rgba(0, 212, 255, 0.03)' }
-              ]
-            }
-          }
-        }
-      ]
+    const times = data.map(item => {
+      const date = new Date(item.created_at)
+      return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
     })
-  } catch (e) {
-    console.error('加载传感器曲线失败:', e)
+    const values = data.map(item => Number(item.value))
+
+    await updateChart(times, values, meta)
+  } catch (err) {
+    console.error('加载传感器曲线失败:', err)
   }
 }
 
-const updateAlarmTrendChart = () => {
-  ensureMainCharts()
-  if (!alarmTrendChart) return
-
-  // 仅用当前 alarmsList 做一个“按小时统计”（准确度取决于 getAlarms 返回量）
-  const buckets = new Map()
-  alarmsList.value.forEach(a => {
-    const d = new Date(a.created_at)
-    if (Number.isNaN(d.getTime())) return
-    const key = `${String(d.getHours()).padStart(2, '0')}:00`
-    buckets.set(key, (buckets.get(key) || 0) + 1)
-  })
-
-  const x = Array.from(buckets.keys()).sort()
-  const y = x.map(k => buckets.get(k))
-
-  alarmTrendChart.setOption({
-    backgroundColor: 'transparent',
-    title: { text: '告警趋势（按小时）', left: 'center', top: 10, textStyle: { color: '#00d4ff', fontSize: 14 } },
-    tooltip: { trigger: 'axis' },
-    grid: { left: '10%', right: '5%', top: '22%', bottom: '14%' },
-    xAxis: { type: 'category', data: x, axisLine: { lineStyle: { color: '#00d4ff' } }, axisLabel: { color: '#8899aa' } },
-    yAxis: {
-      type: 'value',
-      axisLine: { lineStyle: { color: '#00d4ff' } },
-      axisLabel: { color: '#8899aa' },
-      splitLine: { lineStyle: { color: 'rgba(0, 212, 255, 0.1)' } }
-    },
-    series: [{ type: 'bar', data: y, itemStyle: { color: 'rgba(255, 77, 79, 0.85)' } }]
-  })
+const handleSensorClick = async sensorCode => {
+  if (!sensorCode) return
+  selectedSensorCode.value = sensorCode
+  await loadSensorChart(sensorCode)
 }
 
-const updateTypePieChart = () => {
-  ensureMainCharts()
-  if (!typePieChart) return
-
-  typePieChart.setOption({
-    backgroundColor: 'transparent',
-    title: { text: '传感器类型分布', left: 'center', top: 10, textStyle: { color: '#00d4ff', fontSize: 14 } },
-    tooltip: { trigger: 'item' },
-    legend: { bottom: 5, textStyle: { color: '#8899aa' } },
-    series: [
-      {
-        type: 'pie',
-        radius: ['35%', '60%'],
-        center: ['50%', '52%'],
-        data: sensorTypeStats.value.map(i => ({ name: getSensorTypeName(i.type), value: i.count })),
-        label: { color: '#e0e6ed' }
-      }
-    ]
-  })
-}
-
-const updateSectionMultiChart = async force => {
-  const now = Date.now()
-  if (!force && now - lastSectionChartUpdateAt.value < minSectionChartIntervalMs) return
-  if (chartSlideIndex.value !== 3) return
-
-  await nextTick()
-  ensureSectionChart()
-  if (!sectionMultiChart) return
-
-  const section = selectedSection.value
-  const sensors = sectionSensorsForChart.value
-
-  if (!section || sensors.length === 0) {
-    sectionMultiChart.setOption({
-      backgroundColor: 'transparent',
-      title: { text: '断面多传感器叠加（暂无数据）', left: 'center', top: 10, textStyle: { color: '#00d4ff', fontSize: 14 } },
-      xAxis: { type: 'category', data: [] },
-      yAxis: { type: 'value' },
-      series: []
-    })
-    lastSectionChartUpdateAt.value = now
-    return
+// ========== 刷新调度 ==========
+const refreshAllData = async () => {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await Promise.all([loadOverview(), loadRealtimeData(), loadAlarms()])
+    if (selectedSensorCode.value) await loadSensorChart(selectedSensorCode.value)
+  } finally {
+    refreshing.value = false
   }
+}
 
-  const results = await Promise.allSettled(sensors.map(s => getSensorLatest(s.sensor_code, 60)))
+const startRefreshTimer = () => {
+  stopRefreshTimer()
+  refreshTimer = setInterval(refreshAllData, 10000)
+}
 
-  // 汇总所有时间点
-  const timeToTs = new Map()
-  const seriesMaps = []
-  results.forEach((r, idx) => {
-    const sensor = sensors[idx]
-    if (r.status !== 'fulfilled') {
-      seriesMaps.push({ sensor, map: new Map() })
-      return
+const stopRefreshTimer = () => {
+  if (refreshTimer) clearInterval(refreshTimer)
+  refreshTimer = null
+}
+
+const handleResize = () => {
+  chartInstance.value?.resize()
+  updateSensorViewport()
+}
+
+// 页面后台暂停轮询，回前台立即刷新
+const handleVisibilityChange = async () => {
+  if (document.hidden) {
+    stopRefreshTimer()
+  } else {
+    await refreshAllData()
+    startRefreshTimer()
+  }
+}
+
+// ========== 切桥自动选第一个传感器 ==========
+watch(
+  selectedBridgeId,
+  async () => {
+    selectedSensorCode.value = null
+    await nextTick()
+
+    const first = firstSensorCodeInCurrentBridge.value
+    if (first) await handleSensorClick(first)
+
+    if (sensorsListEl.value) sensorsListEl.value.scrollTop = 0
+  },
+  { flush: 'post' }
+)
+
+// ========== 告警轮播（按行） ==========
+const alarmsListEl = ref(null)
+let alarmScrollTimer = null
+const alarmPaused = ref(false)
+
+// 行“节距”：height(46) + margin-bottom(8) = 54
+const ALARM_ROW_PITCH = 54
+
+const startAlarmAutoScroll = () => {
+  stopAlarmAutoScroll()
+  alarmScrollTimer = setInterval(() => {
+    if (alarmPaused.value) return
+    const el = alarmsListEl.value
+    if (!el) return
+    if (el.scrollHeight <= el.clientHeight) return
+
+    const maxTop = el.scrollHeight - el.clientHeight
+    const nextTop = el.scrollTop + ALARM_ROW_PITCH
+    el.scrollTo({ top: nextTop >= maxTop ? 0 : nextTop, behavior: 'smooth' })
+  }, 2000)
+}
+
+const stopAlarmAutoScroll = () => {
+  if (alarmScrollTimer) clearInterval(alarmScrollTimer)
+  alarmScrollTimer = null
+}
+
+const pauseAlarmScroll = () => (alarmPaused.value = true)
+const resumeAlarmScroll = () => (alarmPaused.value = false)
+
+// ========== 传感器列表虚拟滚动（无依赖） ==========
+const sensorsListEl = ref(null)
+const sensorScrollTop = ref(0)
+const sensorViewportHeight = ref(0)
+
+const H_SECTION = 34
+// 传感器行节距：height(78) + margin-bottom(8) = 86
+const H_SENSOR_PITCH = 86
+const OVERSCAN_PX = 300
+
+const onSensorsScroll = e => {
+  sensorScrollTop.value = e.target.scrollTop
+}
+
+const updateSensorViewport = () => {
+  const el = sensorsListEl.value
+  if (!el) return
+  sensorViewportHeight.value = el.clientHeight
+}
+
+const flatSensorItems = computed(() => {
+  const items = []
+  for (const sec of viewSections.value) {
+    items.push({ type: 'section', key: `sec-${sec.id}`, name: sec.name })
+    for (const s of sec.viewSensors || []) {
+      items.push({ type: 'sensor', key: `sensor-${s.id}`, sensor: s })
     }
-    const data = r.value?.data?.success ? r.value.data.data || [] : []
-    const map = new Map()
-    data.forEach(item => {
-      const d = new Date(item.created_at)
-      const ts = d.getTime()
-      if (Number.isNaN(ts)) return
-      const label = formatHms(d)
-      timeToTs.set(label, ts)
-      map.set(label, parseFloat(item.value))
-    })
-    seriesMaps.push({ sensor, map })
-  })
-
-  const times = Array.from(timeToTs.entries())
-    .sort((a, b) => a[1] - b[1])
-    .map(([label]) => label)
-
-  const palette = ['#00d4ff', '#4d9eff', '#36cfc9', '#ffa940', '#ff4d4f', '#9254de', '#73d13d', '#f759ab']
-  const series = seriesMaps.map((sm, i) => {
-    const name = sm.sensor.sensor_name || sm.sensor.sensor_code
-    const data = times.map(t => {
-      const v = sm.map.get(t)
-      return v === undefined ? null : v
-    })
-    return {
-      name,
-      type: 'line',
-      smooth: true,
-      showSymbol: false,
-      data,
-      lineStyle: { width: 2, color: palette[i % palette.length] },
-      itemStyle: { color: palette[i % palette.length] },
-      emphasis: { focus: 'series' }
-    }
-  })
-
-  sectionMultiChart.setOption({
-    backgroundColor: 'transparent',
-    title: { text: `断面多传感器叠加（${section.name}）`, left: 'center', top: 10, textStyle: { color: '#00d4ff', fontSize: 14 } },
-    tooltip: { trigger: 'axis' },
-    legend: { top: 38, left: 'center', textStyle: { color: '#a0c4d9' } },
-    grid: { left: '8%', right: '5%', top: '25%', bottom: '14%' },
-    xAxis: { type: 'category', data: times, axisLine: { lineStyle: { color: '#00d4ff' } }, axisLabel: { color: '#8899aa' } },
-    yAxis: {
-      type: 'value',
-      axisLine: { lineStyle: { color: '#00d4ff' } },
-      axisLabel: { color: '#8899aa' },
-      splitLine: { lineStyle: { color: 'rgba(0, 212, 255, 0.1)' } }
-    },
-    dataZoom: [{ type: 'inside' }],
-    series
-  })
-
-  lastSectionChartUpdateAt.value = now
-}
-
-const resizeCharts = () => {
-  realtimeChart?.resize()
-  alarmTrendChart?.resize()
-  typePieChart?.resize()
-  sectionMultiChart?.resize()
-}
-
-// ========= 轮播/分页定时器 =========
-const startTimers = () => {
-  stopTimers()
-
-  // 分页轮播（让表格显示更多数据）
-  pageRotateTimer = setInterval(() => {
-    allSensorsPageIndex.value = clampIndex(allSensorsPageIndex.value + 1, allSensorsPages.value.length)
-    exceededPageIndex.value = clampIndex(exceededPageIndex.value + 1, exceededPages.value.length)
-    offlinePageIndex.value = clampIndex(offlinePageIndex.value + 1, offlinePages.value.length)
-    alarmPageIndex.value = clampIndex(alarmPageIndex.value + 1, alarmPages.value.length)
-  }, 4000)
-
-  // 桥梁轮巡
-  bridgeRotateTimer = setInterval(() => {
-    if (autoRotateBridge.value) rotateBridgeOnce()
-  }, 20000)
-
-  // 传感器轮巡
-  sensorRotateTimer = setInterval(() => {
-    if (autoRotateSensor.value) rotateSensorOnce()
-  }, 6000)
-}
-
-const stopTimers = () => {
-  if (pageRotateTimer) clearInterval(pageRotateTimer)
-  if (bridgeRotateTimer) clearInterval(bridgeRotateTimer)
-  if (sensorRotateTimer) clearInterval(sensorRotateTimer)
-  pageRotateTimer = null
-  bridgeRotateTimer = null
-  sensorRotateTimer = null
-}
-
-// ========= 监听 =========
-watch(selectedBridgeId, async () => {
-  allSensorsPageIndex.value = 0
-  exceededPageIndex.value = 0
-  offlinePageIndex.value = 0
-
-  await nextTick()
-  pickDefaultSensor()
-  updateTypePieChart()
-  resizeCharts()
-
-  if (chartSlideIndex.value === 3) {
-    await updateSectionMultiChart(true)
   }
+  return items
 })
 
-watch(selectedSensorCode, async code => {
-  if (!code) return
-  await nextTick()
-  await loadSensorChart(code)
+const itemHeight = item => (item.type === 'section' ? H_SECTION : H_SENSOR_PITCH)
 
-  if (chartSlideIndex.value === 3) {
-    await updateSectionMultiChart(true)
+const prefixHeights = computed(() => {
+  const items = flatSensorItems.value
+  const prefix = new Array(items.length + 1)
+  prefix[0] = 0
+  for (let i = 0; i < items.length; i++) {
+    prefix[i + 1] = prefix[i] + itemHeight(items[i])
   }
+  return prefix
 })
 
-watch(chartSlideIndex, async idx => {
-  await nextTick()
-  resizeCharts()
-  if (idx === 3) {
-    await updateSectionMultiChart(true)
+const totalSensorListHeight = computed(() => {
+  const p = prefixHeights.value
+  return p[p.length - 1] || 0
+})
+
+const lowerBoundPrefix = (prefix, y) => {
+  let l = 0
+  let r = prefix.length - 1
+  while (l < r) {
+    const mid = Math.floor((l + r + 1) / 2)
+    if (prefix[mid] <= y) l = mid
+    else r = mid - 1
   }
+  return l
+}
+
+const visibleRange = computed(() => {
+  const items = flatSensorItems.value
+  const prefix = prefixHeights.value
+  if (!items.length) return { start: 0, end: 0, padTop: 0, padBottom: 0 }
+
+  const top = Math.max(0, sensorScrollTop.value - OVERSCAN_PX)
+  const bottom = sensorScrollTop.value + sensorViewportHeight.value + OVERSCAN_PX
+
+  const start = Math.max(0, lowerBoundPrefix(prefix, top))
+  const end = Math.min(items.length, lowerBoundPrefix(prefix, bottom))
+
+  const padTop = prefix[start]
+  const padBottom = prefix[items.length] - prefix[end]
+  return { start, end, padTop, padBottom }
 })
 
-watch([allSensorsPages, exceededPages, offlinePages, alarmPages], () => {
-  allSensorsPageIndex.value = clampIndex(allSensorsPageIndex.value, allSensorsPages.value.length)
-  exceededPageIndex.value = clampIndex(exceededPageIndex.value, exceededPages.value.length)
-  offlinePageIndex.value = clampIndex(offlinePageIndex.value, offlinePages.value.length)
-  alarmPageIndex.value = clampIndex(alarmPageIndex.value, alarmPages.value.length)
+const visibleSensorItems = computed(() => {
+  const { start, end } = visibleRange.value
+  return flatSensorItems.value.slice(start, end)
 })
 
-// ========= 生命周期 =========
+// ========== 生命周期 ==========
 onMounted(async () => {
   updateTime()
   timeTimer = setInterval(updateTime, 1000)
 
   await loadBridgesData()
   await refreshAllData()
-  pickDefaultSensor()
 
-  refreshTimer = setInterval(refreshAllData, 10000)
+  if (!selectedSensorCode.value && firstSensorCodeInCurrentBridge.value) {
+    await handleSensorClick(firstSensorCodeInCurrentBridge.value)
+  }
 
-  resizeHandler = () => resizeCharts()
-  window.addEventListener('resize', resizeHandler)
+  startRefreshTimer()
+  startAlarmAutoScroll()
+
+  window.addEventListener('resize', handleResize)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 
   await nextTick()
-  ensureMainCharts()
-  updateAlarmTrendChart()
-  updateTypePieChart()
-  if (selectedSensorCode.value) await loadSensorChart(selectedSensorCode.value)
-
-  startTimers()
+  updateSensorViewport()
 })
 
 onUnmounted(() => {
+  stopRefreshTimer()
+  stopAlarmAutoScroll()
+
   if (timeTimer) clearInterval(timeTimer)
-  if (refreshTimer) clearInterval(refreshTimer)
-  stopTimers()
+  timeTimer = null
 
-  if (resizeHandler) window.removeEventListener('resize', resizeHandler)
+  window.removeEventListener('resize', handleResize)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 
-  realtimeChart?.dispose()
-  alarmTrendChart?.dispose()
-  typePieChart?.dispose()
-  sectionMultiChart?.dispose()
-  realtimeChart = null
-  alarmTrendChart = null
-  typePieChart = null
-  sectionMultiChart = null
+  if (chartInstance.value) {
+    chartInstance.value.dispose()
+    chartInstance.value = null
+  }
 })
 </script>
 
 <template>
-  <div class="screen">
-    <!-- 顶部 -->
-    <div class="topbar">
-      <div class="topbar-left">
-        <div class="title">天水桥梁健康监测系统</div>
-        <div class="subtitle">
-          <span>当前时间：{{ currentTime }}</span>
-          <span class="divider">|</span>
-          <span>数据刷新：{{ lastRefreshTime || '--' }}</span>
+  <div class="dashboard-container">
+    <!-- 由于 Layout.vue 已有顶部标题行，这里只保留工具栏（时间 + 桥梁选择） -->
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <span class="toolbar-label">当前时间</span>
+        <span class="toolbar-time">{{ currentTime }}</span>
+      </div>
+
+      <div class="toolbar-right">
+        <span class="toolbar-label">桥梁</span>
+        <el-select v-model="selectedBridgeId" placeholder="请选择桥梁" size="large" style="width: 220px">
+          <el-option v-for="bridge in bridgesData" :key="bridge.id" :label="bridge.name" :value="bridge.id" />
+        </el-select>
+      </div>
+    </div>
+
+    <!-- 统计卡片区 -->
+    <div class="stats-cards">
+      <div class="stat-card">
+        <div class="stat-label">桥梁总数</div>
+        <div class="stat-value">{{ overview.bridgeCount }}</div>
+        <div class="stat-unit">座</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">传感器总数</div>
+        <div class="stat-value">{{ overview.sensorCount }}</div>
+        <div class="stat-unit">个</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">在线率</div>
+        <div class="stat-value">{{ overview.onlineRate }}</div>
+        <div class="stat-unit">%</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">今日告警</div>
+        <div class="stat-value">{{ overview.todayAlarms }}</div>
+        <div class="stat-unit">条</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">待处理告警</div>
+        <div class="stat-value warning">{{ overview.unhandledAlarms }}</div>
+        <div class="stat-unit">条</div>
+      </div>
+    </div>
+
+    <!-- 主体内容区 -->
+    <div class="main-content">
+      <!-- 左侧：断面/传感器列表（虚拟滚动） -->
+      <div class="left-panel">
+        <div class="panel-title">传感器实时状态</div>
+
+        <div ref="sensorsListEl" class="sensors-list" @scroll="onSensorsScroll">
+          <div v-if="!currentBridge" class="empty-tip">请选择桥梁</div>
+          <div v-else-if="!viewSections.length" class="empty-tip">该桥梁暂无断面数据</div>
+
+          <template v-else>
+            <div class="virtual-total" :style="{ height: totalSensorListHeight + 'px' }">
+              <div
+                class="virtual-pad"
+                :style="{
+                  paddingTop: visibleRange.padTop + 'px',
+                  paddingBottom: visibleRange.padBottom + 'px'
+                }"
+              >
+                <template v-for="item in visibleSensorItems" :key="item.key">
+                  <div v-if="item.type === 'section'" class="section-row">
+                    <div class="section-title">{{ item.name }}</div>
+                  </div>
+
+                  <div
+                    v-else
+                    class="sensor-item sensor-row"
+                    :class="{
+                      active: selectedSensorCode === item.sensor.sensor_code,
+                      exceeded: item.sensor.exceeded
+                    }"
+                    @click="handleSensorClick(item.sensor.sensor_code)"
+                  >
+                    <div class="sensor-name">
+                      <span class="sensor-icon">📡</span>
+                      <span class="sensor-name-text">{{ item.sensor.sensor_name }}</span>
+                    </div>
+                    <!-- <div class="sensor-type">{{ getSensorTypeName(item.sensor.sensor_type) }}</div> -->
+                    <div class="sensor-value">
+                      <span class="sensor-type">{{ getSensorTypeName(item.sensor.sensor_type) }}值：</span>
+                      {{ item.sensor.displayValue }}
+                      <span class="unit">{{ item.sensor.unit }}</span>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
         </div>
       </div>
 
-      <div class="topbar-right">
-        <div class="controls">
-          <div class="ctrl">
-            <span class="label">桥梁：</span>
-            <el-select v-model="selectedBridgeId" size="large" style="width: 240px" placeholder="请选择桥梁">
-              <el-option v-for="b in bridgesData" :key="b.id" :label="b.name" :value="b.id" />
-            </el-select>
-          </div>
-
-          <div class="ctrl switch">
-            <span class="label">桥梁轮巡</span>
-            <el-switch v-model="autoRotateBridge" />
-          </div>
-
-          <div class="ctrl switch">
-            <span class="label">传感器轮巡</span>
-            <el-switch v-model="autoRotateSensor" />
-          </div>
+      <!-- 右侧：实时曲线图 -->
+      <div class="right-panel">
+        <div class="panel-title">实时数据曲线</div>
+        <div class="chart-container">
+          <div v-if="!selectedSensorCode" class="empty-tip">请点击左侧传感器查看曲线</div>
+          <div ref="chartEl" class="chart" v-show="!!selectedSensorCode"></div>
         </div>
       </div>
     </div>
 
-    <!-- KPI -->
-    <div class="kpis">
-      <div class="kpi">
-        <div class="kpi-label">桥梁总数</div>
-        <div class="kpi-value">{{ overview.bridgeCount }}</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">传感器总数</div>
-        <div class="kpi-value">{{ overview.sensorCount }}</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">在线传感器</div>
-        <div class="kpi-value">{{ overview.onlineSensors }}</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">离线/无数据</div>
-        <div class="kpi-value warn">{{ offlineCount }}</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">超限点位</div>
-        <div class="kpi-value warn">{{ exceededCount }}</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">在线率(%)</div>
-        <div class="kpi-value">{{ overview.onlineRate }}</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">待处理告警</div>
-        <div class="kpi-value warn">{{ overview.unhandledAlarms }}</div>
-      </div>
-    </div>
+    <!-- 底部：告警自动轮播 -->
+    <div class="alarms-panel">
+      <div class="panel-title">最新告警</div>
 
-    <!-- 全局滚动条（摘要） -->
-    <div class="ticker">
-      <div class="ticker-label">实时摘要</div>
-      <div class="ticker-viewport" :class="{ static: tickerIsStatic }">
-        <div class="ticker-track" :class="{ static: tickerIsStatic }" :style="{ animationDuration: marqueeDuration + 's' }">
-          <span class="ticker-text">{{ tickerText }}</span>
-          <span class="ticker-gap">　　</span>
-          <span v-if="!tickerIsStatic" class="ticker-text">{{ tickerText }}</span>
+      <div ref="alarmsListEl" class="alarms-list" @mouseenter="pauseAlarmScroll" @mouseleave="resumeAlarmScroll">
+        <div v-if="alarmsList.length === 0" class="empty-tip">暂无告警</div>
+
+        <div v-for="alarm in alarmsList" :key="alarm.id" class="alarm-item">
+          <span class="alarm-icon">⚠️</span>
+          <span class="alarm-time">{{ alarm.created_at }}</span>
+          <span class="alarm-bridge">{{ alarm.bridge_name }}</span>
+          <span class="alarm-sensor">{{ alarm.sensor_name }}</span>
+          <span class="alarm-msg" :title="alarm.msg">{{ alarm.msg }}</span>
+          <span class="alarm-value">数值: {{ alarm.val }}</span>
         </div>
-      </div>
-    </div>
-
-    <!-- 主体：左表 + 中图 + 右表 -->
-    <div class="grid">
-      <!-- 左：传感器轮播表 -->
-      <div class="panel">
-        <div class="panel-title">
-          传感器轮播表
-          <span class="panel-sub">（{{ currentBridge?.name || '未选择桥梁' }}）</span>
-        </div>
-
-        <el-carousel height="420px" :interval="9000" indicator-position="outside" @change="resizeCharts">
-          <el-carousel-item>
-            <div class="table-head">
-              <span>全部点位</span>
-              <span class="page">{{ allSensorsPageIndex + 1 }}/{{ allSensorsPages.length || 1 }}</span>
-            </div>
-            <el-table :data="allSensorsPage" height="380" size="small" class="table">
-              <el-table-column label="断面" prop="section_name" width="110" />
-              <el-table-column label="名称" prop="sensor_name" min-width="130" />
-              <el-table-column label="类型" width="90">
-                <template #default="{ row }">{{ getSensorTypeName(row.sensor_type) }}</template>
-              </el-table-column>
-              <el-table-column label="值" width="120">
-                <template #default="{ row }">
-                  <span :class="['val', isSensorExceeded(row) ? 'warn' : 'ok']">
-                    {{ row.realtime_value ?? '--' }}
-                  </span>
-                  <span class="unit">{{ row.unit }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="状态" width="90">
-                <template #default="{ row }">
-                  <span :class="row.is_online ? 'ok' : 'warn'">{{ row.is_online ? '在线' : '离线' }}</span>
-                </template>
-              </el-table-column>
-            </el-table>
-          </el-carousel-item>
-
-          <el-carousel-item>
-            <div class="table-head">
-              <span>超限 TOP</span>
-              <span class="page">{{ exceededPageIndex + 1 }}/{{ exceededPages.length || 1 }}</span>
-            </div>
-            <el-table :data="exceededPage" height="380" size="small" class="table">
-              <el-table-column label="断面" prop="section_name" width="110" />
-              <el-table-column label="名称" prop="sensor_name" min-width="140" />
-              <el-table-column label="值" width="120">
-                <template #default="{ row }">
-                  <span class="val warn">{{ row.realtime_value }}</span>
-                  <span class="unit">{{ row.unit }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="超限幅度" width="110">
-                <template #default="{ row }">{{ row.exceed?.toFixed?.(3) ?? row.exceed }}</template>
-              </el-table-column>
-            </el-table>
-          </el-carousel-item>
-
-          <el-carousel-item>
-            <div class="table-head">
-              <span>离线/无数据</span>
-              <span class="page">{{ offlinePageIndex + 1 }}/{{ offlinePages.length || 1 }}</span>
-            </div>
-            <el-table :data="offlinePage" height="380" size="small" class="table">
-              <el-table-column label="断面" prop="section_name" width="110" />
-              <el-table-column label="名称" prop="sensor_name" min-width="160" />
-              <el-table-column label="类型" width="100">
-                <template #default="{ row }">{{ getSensorTypeName(row.sensor_type) }}</template>
-              </el-table-column>
-              <el-table-column label="编码" prop="sensor_code" min-width="140" />
-            </el-table>
-          </el-carousel-item>
-        </el-carousel>
-      </div>
-
-      <!-- 中：图表轮播 -->
-      <div class="panel">
-        <div class="panel-title">
-          图表轮播
-          <span class="panel-sub">（传感器：{{ selectedSensorCode || '--' }}）</span>
-        </div>
-
-        <el-carousel v-model="chartSlideIndex" height="420px" :interval="12000" indicator-position="outside" @change="resizeCharts">
-          <el-carousel-item>
-            <div ref="realtimeChartEl" class="chart"></div>
-          </el-carousel-item>
-          <el-carousel-item>
-            <div ref="alarmTrendChartEl" class="chart"></div>
-          </el-carousel-item>
-          <el-carousel-item>
-            <div ref="typePieChartEl" class="chart"></div>
-          </el-carousel-item>
-          <el-carousel-item>
-            <div ref="sectionMultiChartEl" class="chart"></div>
-          </el-carousel-item>
-        </el-carousel>
-      </div>
-
-      <!-- 右：告警轮播表 -->
-      <div class="panel">
-        <div class="panel-title">最新告警（轮播）</div>
-
-        <div class="table-head">
-          <span>告警列表</span>
-          <span class="page">{{ alarmPageIndex + 1 }}/{{ alarmPages.length || 1 }}</span>
-        </div>
-
-        <el-table :data="alarmPage" height="380" size="small" class="table alarm-table">
-          <el-table-column label="时间" prop="created_at" width="160" />
-          <el-table-column label="桥梁" prop="bridge_name" width="120" />
-          <el-table-column label="传感器" prop="sensor_name" min-width="140" />
-          <el-table-column label="告警" prop="msg" min-width="160" />
-          <el-table-column label="数值" prop="val" width="110" />
-        </el-table>
-
-        <div class="hint">如需更准确的“趋势/占比”，建议后端 `getAlarms` 支持 `limit`/时间范围；前端即可展示近 24h 全量告警并统计。</div>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.screen {
-  width: 100%;
-  min-height: calc(100vh - 140px);
-  background: radial-gradient(1200px 600px at 20% 0%, rgba(0, 212, 255, 0.18), transparent 60%), linear-gradient(135deg, #06101f 0%, #122343 60%, #0a1628 100%);
-  padding: 18px;
-  color: #e0e6ed;
+.dashboard-container {
+  color: rgba(255, 255, 255, 0.92);
+  flex: 1;
+  width: 100%; /* 宽度也占满（可选，flex布局下默认宽度拉伸） */
+  height: 100%-500px;
 }
 
-.topbar {
+.toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 14px 18px;
-  border: 1px solid rgba(0, 212, 255, 0.28);
-  background: rgba(0, 20, 40, 0.55);
-  border-radius: 10px;
-  box-shadow: 0 0 22px rgba(0, 212, 255, 0.18);
-  margin-bottom: 14px;
-}
 
-.title {
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: 1px;
-  color: #00d4ff;
-  text-shadow: 0 0 12px rgba(0, 212, 255, 0.35);
-}
-
-.subtitle {
-  margin-top: 4px;
-  color: #8fb4c9;
-  font-size: 13px;
-}
-
-.divider {
-  margin: 0 10px;
-  color: rgba(0, 212, 255, 0.35);
-}
-
-.controls {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.ctrl {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.ctrl.switch {
-  padding: 8px 10px;
-  border: 1px solid rgba(0, 212, 255, 0.18);
-  background: rgba(0, 40, 80, 0.25);
-  border-radius: 8px;
-}
-
-.label {
-  color: #a0c4d9;
-  font-size: 13px;
-}
-
-.kpis {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.kpi {
-  border: 1px solid rgba(0, 212, 255, 0.22);
-  background: rgba(0, 20, 40, 0.55);
-  border-radius: 10px;
   padding: 12px 14px;
-  box-shadow: 0 0 18px rgba(0, 212, 255, 0.12);
+  border-radius: 12px;
+  border: 1px solid rgba(64, 243, 255, 0.18);
+  background: rgba(10, 18, 36, 0.45);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.2);
+
+  margin-bottom: 16px;
 }
 
-.kpi-label {
-  font-size: 12px;
-  color: #88a2b6;
-}
-
-.kpi-value {
-  margin-top: 6px;
-  font-size: 26px;
-  font-weight: 800;
-  color: #00d4ff;
-  text-shadow: 0 0 10px rgba(0, 212, 255, 0.25);
-}
-
-.kpi-value.warn {
-  color: #ff4d4f;
-  text-shadow: 0 0 10px rgba(255, 77, 79, 0.25);
-}
-
-/* ===== 全局滚动条 ===== */
-.ticker {
+.toolbar-left,
+.toolbar-right {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid rgba(0, 212, 255, 0.22);
-  background: rgba(0, 20, 40, 0.55);
-  border-radius: 10px;
-  box-shadow: 0 0 18px rgba(0, 212, 255, 0.12);
-  margin-bottom: 14px;
+  min-width: 0;
 }
 
-.ticker-label {
-  color: rgba(0, 212, 255, 0.95);
-  font-weight: 800;
+.toolbar-label {
+  color: rgba(160, 180, 206, 0.95);
   font-size: 13px;
-  padding: 6px 10px;
-  border: 1px solid rgba(0, 212, 255, 0.18);
-  background: rgba(0, 40, 80, 0.25);
-  border-radius: 8px;
   white-space: nowrap;
 }
 
-.ticker-viewport {
-  position: relative;
-  flex: 1;
+.toolbar-time {
+  color: rgba(160, 180, 206, 0.95);
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  white-space: nowrap;
   overflow: hidden;
-  padding: 6px 0;
-  border-radius: 8px;
+  text-overflow: ellipsis;
 }
 
-.ticker-viewport::before,
-.ticker-viewport::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  width: 48px;
-  height: 100%;
-  z-index: 2;
-  pointer-events: none;
-}
-.ticker-viewport::before {
-  left: 0;
-  background: linear-gradient(90deg, rgba(8, 20, 40, 0.9), rgba(8, 20, 40, 0));
-}
-.ticker-viewport::after {
-  right: 0;
-  background: linear-gradient(270deg, rgba(8, 20, 40, 0.9), rgba(8, 20, 40, 0));
+/* 统计卡片 */
+.stats-cards {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
 }
 
-.ticker-track {
-  display: inline-flex;
-  align-items: center;
-  gap: 24px;
-  white-space: nowrap;
-  will-change: transform;
-  animation-name: marquee;
-  animation-timing-function: linear;
-  animation-iteration-count: infinite;
+.stat-card {
+  flex: 1;
+  min-width: 220px;
+  background: rgba(10, 18, 36, 0.45);
+  border: 1px solid rgba(64, 243, 255, 0.18);
+  border-radius: 12px;
+  padding: 18px 16px;
+  text-align: center;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
+  transition: 0.2s ease;
 }
 
-.ticker-track.static {
-  animation: none;
-  transform: translateX(0);
+.stat-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(64, 243, 255, 0.3);
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.22);
 }
 
-.ticker-viewport:hover .ticker-track {
-  animation-play-state: paused;
-}
-
-.ticker-text {
-  color: #a0c4d9;
+.stat-label {
   font-size: 13px;
+  color: rgba(160, 180, 206, 0.95);
+  margin-bottom: 10px;
 }
 
-.ticker-gap {
-  opacity: 0.4;
+.stat-value {
+  font-size: clamp(24px, 2vw, 40px);
+  font-weight: 800;
+  color: #40f3ff;
+  text-shadow: 0 0 12px rgba(64, 243, 255, 0.25);
+  margin-bottom: 6px;
 }
 
-@keyframes marquee {
-  0% {
-    transform: translateX(0);
-  }
-  100% {
-    transform: translateX(-50%);
-  }
+.stat-value.warning {
+  color: #ff4d4f;
+  text-shadow: 0 0 12px rgba(255, 77, 79, 0.22);
 }
 
-.grid {
-  display: grid;
-  grid-template-columns: 1.05fr 1.3fr 1.15fr;
-  gap: 12px;
+.stat-unit {
+  font-size: 12px;
+  color: rgba(160, 180, 206, 0.7);
 }
 
-.panel {
-  border: 1px solid rgba(0, 212, 255, 0.22);
-  background: rgba(0, 20, 40, 0.55);
-  border-radius: 10px;
-  padding: 14px 14px 10px;
-  box-shadow: 0 0 18px rgba(0, 212, 255, 0.12);
-  min-height: 490px;
+/* 主体内容区 */
+.main-content {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+  height: clamp(420px, 52vh, 640px);
+}
+
+.left-panel,
+.right-panel {
+  background: rgba(10, 18, 36, 0.45);
+  border: 1px solid rgba(64, 243, 255, 0.18);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(10px);
+}
+
+.left-panel {
+  width: clamp(360px, 22vw, 520px);
+  display: flex;
+  flex-direction: column;
+}
+
+.right-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 .panel-title {
   font-size: 16px;
   font-weight: 800;
-  color: #00d4ff;
-  margin-bottom: 10px;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  color: #40f3ff;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(64, 243, 255, 0.18);
 }
 
-.panel-sub {
-  font-size: 12px;
-  color: #8fb4c9;
-  font-weight: 500;
+.sensors-list {
+  flex: 1;
+  overflow-y: auto;
+  position: relative;
 }
 
-.table-head {
+/* 虚拟列表占位 */
+.virtual-total {
+  position: relative;
+  width: 100%;
+}
+
+.virtual-pad {
+  position: relative;
+}
+
+/* 固定行高：虚拟滚动需要 */
+.section-row {
+  height: 34px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  color: #a0c4d9;
-  font-size: 12px;
+}
+
+.section-title {
+  width: 100%;
+  font-size: 14px;
+  color: #7aa8ff;
+  font-weight: 800;
+  padding-left: 10px;
+  border-left: 3px solid #7aa8ff;
+}
+
+/* 传感器行：height 78 + margin-bottom 8 = 节距 86 */
+.sensor-row {
+  height: 78px;
+  margin-bottom: 8px;
+  box-sizing: border-box;
+}
+
+.sensor-item {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(64, 243, 255, 0.14);
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: 0.16s ease;
+}
+
+.sensor-item:hover {
+  background: rgba(64, 243, 255, 0.06);
+  border-color: rgba(64, 243, 255, 0.24);
+  transform: translateX(3px);
+}
+
+.sensor-item.active {
+  background: rgba(64, 243, 255, 0.12);
+  border-color: rgba(64, 243, 255, 0.45);
+  box-shadow: 0 0 0 1px rgba(64, 243, 255, 0.1) inset;
+}
+
+.sensor-item.exceeded {
+  border-color: rgba(255, 77, 79, 0.65);
+  background: rgba(255, 77, 79, 0.08);
+}
+
+.sensor-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.92);
   margin-bottom: 6px;
 }
 
-.page {
-  color: rgba(0, 212, 255, 0.85);
+.sensor-icon {
+  font-size: 16px;
 }
 
-.table :deep(.el-table) {
-  background: transparent;
+.sensor-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.table :deep(.el-table__inner-wrapper),
-.table :deep(.el-table__body-wrapper),
-.table :deep(.el-scrollbar__wrap) {
-  background: transparent;
-}
-
-.table :deep(th.el-table__cell) {
-  background: rgba(0, 40, 80, 0.25);
-  color: #a0c4d9;
-  border-bottom: 1px solid rgba(0, 212, 255, 0.18);
-}
-
-.table :deep(td.el-table__cell) {
-  border-bottom: 1px solid rgba(0, 212, 255, 0.08);
-  color: #e0e6ed;
-}
-
-.table :deep(.el-table__row:hover > td.el-table__cell) {
-  background: rgba(0, 212, 255, 0.06);
-}
-
-.val.ok {
-  color: #00d4ff;
-  font-weight: 700;
-}
-.val.warn {
-  color: #ff4d4f;
-  font-weight: 900;
-}
-.ok {
-  color: #00d4ff;
-}
-.warn {
-  color: #ff4d4f;
-}
-.unit {
-  margin-left: 6px;
-  color: #6d879a;
+.sensor-type {
   font-size: 12px;
+  color: rgba(160, 180, 206, 0.85);
+  margin-bottom: 4px;
+}
+
+.sensor-value {
+  font-size: 18px;
+  font-weight: 800;
+  color: #40f3ff;
+}
+
+.sensor-value .unit {
+  font-size: 12px;
+  color: rgba(160, 180, 206, 0.75);
+  margin-left: 5px;
+}
+
+/* 右侧图表 */
+.chart-container {
+  flex: 1;
+  position: relative;
 }
 
 .chart {
   width: 100%;
-  height: 420px;
+  height: 100%;
 }
 
-.hint {
-  margin-top: 10px;
-  color: #6d879a;
-  font-size: 12px;
-  line-height: 1.4;
+.empty-tip {
+  text-align: center;
+  color: rgba(160, 180, 206, 0.7);
+  padding: 40px 10px;
+  font-size: 14px;
+}
+
+/* 告警面板 */
+.alarms-panel {
+  background: rgba(10, 18, 36, 0.45);
+  border: 1px solid rgba(64, 243, 255, 0.18);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(10px);
+  height: 190px;
+  display: flex;
+  flex-direction: column;
+}
+
+.alarms-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* 告警：栅格对齐 + 省略号（行高46，节距54） */
+.alarm-item {
+  height: 46px;
+  display: grid;
+  grid-template-columns: 26px 150px 110px 140px 1fr 120px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  margin-bottom: 8px;
+
+  background: rgba(255, 77, 79, 0.06);
+  border: 1px solid rgba(255, 77, 79, 0.2);
+  border-radius: 10px;
+
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.alarm-icon {
+  font-size: 16px;
+}
+
+.alarm-time {
+  color: rgba(160, 180, 206, 0.85);
+  font-family: 'Courier New', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alarm-bridge {
+  color: #40f3ff;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alarm-sensor {
+  color: #ffa940;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alarm-msg {
+  color: #ff7875;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alarm-value {
+  color: #ff4d4f;
+  font-weight: 800;
+  justify-self: end;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 滚动条 */
+.sensors-list::-webkit-scrollbar,
+.alarms-list::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.sensors-list::-webkit-scrollbar-thumb,
+.alarms-list::-webkit-scrollbar-thumb {
+  background: rgba(64, 243, 255, 0.22);
+  border-radius: 3px;
+}
+
+.sensors-list::-webkit-scrollbar-thumb:hover,
+.alarms-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(64, 243, 255, 0.35);
+}
+
+.sensors-list::-webkit-scrollbar-track,
+.alarms-list::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.15);
 }
 </style>
