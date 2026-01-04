@@ -19,7 +19,8 @@ const router = createRouter({
           path: '', // 默认子路由 /dashboard
           name: 'dashboard',
           component: () => import('../views/DashboardView.vue'), // 假设您有这个文件，没有的话等下创建
-          meta: { title: '监测总览' }
+          meta: { title: '监测总览' },
+          noPanel: true // 添加这个，禁用layout页面的 page-panel 包装
         }
         // 这里预留其他页面的坑位
         // { path: 'analysis', component: ... }

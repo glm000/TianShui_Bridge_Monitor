@@ -527,7 +527,7 @@ const handleLogout = () => {
 
 /* ========== 内容区域 ========== */
 .app-main {
-  background-color: #f0f2f5;
+  background-color: transparent;
   padding: 0; /* 大屏模式去掉内边距 */
   overflow: hidden; /* 禁止滚动 */
   flex: 1; /* 填满剩余空间 */

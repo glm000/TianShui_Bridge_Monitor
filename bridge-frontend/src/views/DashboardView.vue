@@ -643,7 +643,7 @@ onUnmounted(() => {
 
 <style scoped>
 .dashboard-container {
-  color: rgba(255, 255, 255, 0.92);
+  color: transparent;
   width: 100%;
   height: 100%; /* 修复：使用100%而不是100%-500px */
   display: flex;
