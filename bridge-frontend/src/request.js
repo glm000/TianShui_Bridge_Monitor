@@ -13,3 +13,13 @@ export const post = (url, data) => {
 export const get = (url, params) => {
   return axios.get(baseUrl + url, { params })
 }
+
+// PUT请求方法，用于更新数据
+export const put = (url, data) => {
+  return axios.put(baseUrl + url, data)
+}
+
+// DELETE请求方法，用于删除数据
+export const del = (url) => {
+  return axios.delete(baseUrl + url)
+}

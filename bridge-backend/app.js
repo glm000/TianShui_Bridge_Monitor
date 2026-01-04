@@ -23,6 +23,7 @@ const bridgeRoutes = require('./routes/bridgeRoutes') // 桥梁业务相关路�
 const dataRoutes = require('./routes/dataRoutes') // 数据业务相关路由
 const userRoutes = require('./routes/userRoutes') // 用户业务相关路由
 const dashboardRoutes = require('./routes/dashboardRoutes') // 监控大屏相关路由
+const settingsRoutes = require('./routes/settingsRoutes') // 系统设置相关路由
 
 const app = express() // 创建一个 Express 应用实例
 const PORT = process.env.PORT || 3000
@@ -35,6 +36,7 @@ app.use('/api/bridge', bridgeRoutes) //如果前端的请求是以 /api/bridge �
 app.use('/api/data', dataRoutes) //如果前端的请求是以 /api/data 开头的，去找 dataRoutes
 app.use('/api/user', userRoutes) //如果前端的请求是以 /api/user 开头的，去找 userRoutes
 app.use('/api/dashboard', dashboardRoutes) //如果前端的请求是以 /api/dashboard 开头的，去找 dashboardRoutes
+app.use('/api/settings', settingsRoutes) //如果前端的请求是以 /api/settings 开头的，去找 settingsRoutes
 
 /*
  * 启动那个每10秒造一次数据的机器人

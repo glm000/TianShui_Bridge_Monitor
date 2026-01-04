@@ -21,6 +21,12 @@ const router = createRouter({
           component: () => import('../views/DashboardView.vue'), // 假设您有这个文件，没有的话等下创建
           meta: { title: '监测总览' },
           noPanel: true // 添加这个，禁用layout页面的 page-panel 包装
+        },
+        {
+          path: 'settings',
+          name: 'settings',
+          component: () => import('../views/SettingsView.vue'),
+          meta: { title: '系统设置' }
         }
         // 这里预留其他页面的坑位
         // { path: 'analysis', component: ... }
