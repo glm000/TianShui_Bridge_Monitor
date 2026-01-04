@@ -65,5 +65,6 @@ export const exportData = (params) => {
   // 构建查询字符串
   const queryString = new URLSearchParams(params).toString()
   // 返回完整URL供前端触发下载
-  return `http://localhost:3000/api/analysis/export?${queryString}`
+  const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000'
+  return `${baseUrl}/api/analysis/export?${queryString}`
 }

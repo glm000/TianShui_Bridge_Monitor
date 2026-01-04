@@ -1,5 +1,8 @@
 const db = require('../config/db')
 
+// 导出数据行数限制
+const EXPORT_LIMIT = process.env.EXPORT_LIMIT || 10000
+
 /**
  * GET /api/analysis/history - 查询历史数据（分页）
  * 参数：bridgeId, sectionId, sensorCode, startTime, endTime, page, pageSize
@@ -129,8 +132,14 @@ exports.getStatistics = async (req, res) => {
     if (sensorInfo[0]) {
       const { limit_max, limit_min } = sensorInfo[0]
       const conditions = []
-      if (limit_max !== null) conditions.push(`sd.value > ${limit_max}`)
-      if (limit_min !== null) conditions.push(`sd.value < ${limit_min}`)
+      if (limit_max !== null) {
+        conditions.push(`sd.value > ?`)
+        exceedParams.push(limit_max)
+      }
+      if (limit_min !== null) {
+        conditions.push(`sd.value < ?`)
+        exceedParams.push(limit_min)
+      }
       if (conditions.length > 0) {
         exceedSql += ` AND (${conditions.join(' OR ')})`
       }
@@ -273,12 +282,12 @@ exports.getDistribution = async (req, res) => {
     // 构建分布查询
     let sql = `
       SELECT 
-        FLOOR((value - ${minVal}) / ${binWidth}) as bin_index,
+        FLOOR((value - ?) / ?) as bin_index,
         COUNT(*) as count
       FROM sensor_data
       WHERE sensor_code = ?
     `
-    const params = [sensorCode]
+    const params = [minVal, binWidth, sensorCode]
 
     if (startTime) {
       sql += ' AND created_at >= ?'
@@ -594,7 +603,7 @@ exports.exportData = async (req, res) => {
       params.push(endTime)
     }
 
-    sql += ' ORDER BY sd.created_at DESC LIMIT 10000' // 限制导出数量
+    sql += ` ORDER BY sd.created_at DESC LIMIT ${parseInt(EXPORT_LIMIT)}` // 限制导出数量
 
     const [rows] = await db.query(sql, params)
 
