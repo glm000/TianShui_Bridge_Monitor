@@ -25,9 +25,9 @@
         >
           <template #default="{ node, data }">
             <span class="tree-node">
-              <el-icon v-if="data.type === 'bridge'"><OfficeBuilding /></el-icon>
+              <el-icon v-if="data.type === 'root'" class="root-icon"><Folder /></el-icon>
+              <el-icon v-else-if="data.type === 'bridge'"><OfficeBuilding /></el-icon>
               <el-icon v-else-if="data.type === 'section'"><Location /></el-icon>
-              <el-icon v-else-if="data.type === 'sensor'"><Monitor /></el-icon>
               <span class="node-label">{{ node.label }}</span>
             </span>
           </template>
@@ -38,19 +38,24 @@
       <div class="management-panel">
         <!-- 面包屑导航 -->
         <div class="breadcrumb">
-          <el-breadcrumb separator="/">
-            <el-breadcrumb-item v-if="currentView === 'bridge'">桥梁管理</el-breadcrumb-item>
-            <el-breadcrumb-item v-if="currentView === 'section'">
-              {{ selectedBridgeName }} / 断面管理
+          <el-breadcrumb separator=">">
+            <el-breadcrumb-item @click="goToLevel('bridge')" class="clickable">
+              桥梁管理
             </el-breadcrumb-item>
-            <el-breadcrumb-item v-if="currentView === 'sensor'">
-              {{ selectedBridgeName }} / {{ selectedSectionName }} / 传感器管理
+            <el-breadcrumb-item v-if="selectedBridge" @click="goToLevel('section')" class="clickable">
+              {{ selectedBridge.name }}
+            </el-breadcrumb-item>
+            <el-breadcrumb-item v-if="selectedSection">
+              {{ selectedSection.name }}
             </el-breadcrumb-item>
           </el-breadcrumb>
         </div>
 
-        <!-- 桥梁管理表格 -->
-        <div v-if="currentView === 'bridge'" class="table-container">
+        <!-- 桥梁列表 (点击根节点"桥梁管理") -->
+        <div v-if="currentLevel === 'bridge'" class="table-container">
+          <div class="section-title">
+            <h3>桥梁列表</h3>
+          </div>
           <div class="table-toolbar">
             <el-button type="primary" @click="openBridgeDialog()">
               <el-icon><Plus /></el-icon>
@@ -70,75 +75,176 @@
             <el-table-column prop="created_at" label="创建时间" width="180" />
             <el-table-column label="操作" width="200" fixed="right">
               <template #default="{ row }">
-                <el-button type="primary" size="small" @click="openBridgeDialog(row)">编辑</el-button>
+                <el-button type="warning" size="small" @click="openBridgeDialog(row)">编辑</el-button>
                 <el-button type="danger" size="small" @click="handleDeleteBridge(row)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
+          <el-empty v-if="!loading && bridges.length === 0" description="暂无桥梁数据" />
         </div>
 
-        <!-- 断面管理表格 -->
-        <div v-if="currentView === 'section'" class="table-container">
-          <div class="table-toolbar">
-            <el-button type="primary" @click="openSectionDialog()">
-              <el-icon><Plus /></el-icon>
-              新增断面
-            </el-button>
-            <el-button @click="loadSections">
-              <el-icon><Refresh /></el-icon>
-              刷新
-            </el-button>
+        <!-- 断面管理 (点击桥梁节点) -->
+        <div v-if="currentLevel === 'section'" class="content-container">
+          <!-- 桥梁信息卡片 -->
+          <el-card class="info-card" shadow="hover">
+            <template #header>
+              <div class="card-header">
+                <span class="card-title">
+                  <el-icon><OfficeBuilding /></el-icon>
+                  桥梁信息: {{ selectedBridge?.name }}
+                </span>
+                <div class="card-actions">
+                  <el-button type="warning" size="small" @click="openBridgeDialog(selectedBridge)">
+                    <el-icon><Edit /></el-icon>
+                    编辑
+                  </el-button>
+                  <el-button type="danger" size="small" @click="handleDeleteBridge(selectedBridge)">
+                    <el-icon><Delete /></el-icon>
+                    删除
+                  </el-button>
+                </div>
+              </div>
+            </template>
+            <div class="info-content">
+              <div class="info-item">
+                <span class="info-label">位置:</span>
+                <span class="info-value">{{ selectedBridge?.location || '-' }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">经度:</span>
+                <span class="info-value">{{ selectedBridge?.lng || '-' }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">纬度:</span>
+                <span class="info-value">{{ selectedBridge?.lat || '-' }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">创建时间:</span>
+                <span class="info-value">{{ selectedBridge?.created_at || '-' }}</span>
+              </div>
+            </div>
+          </el-card>
+
+          <!-- 断面列表 -->
+          <div class="table-container">
+            <div class="section-title">
+              <h3>断面列表</h3>
+            </div>
+            <div class="table-toolbar">
+              <el-button type="primary" @click="openSectionDialog()">
+                <el-icon><Plus /></el-icon>
+                新增断面
+              </el-button>
+              <el-button @click="loadSections(selectedBridge?.id)">
+                <el-icon><Refresh /></el-icon>
+                刷新
+              </el-button>
+            </div>
+            <el-table :data="sections" stripe v-loading="loading" border>
+              <el-table-column prop="id" label="ID" width="80" />
+              <el-table-column prop="name" label="断面名称" min-width="150" />
+              <el-table-column prop="description" label="描述" min-width="200" />
+              <el-table-column prop="lng" label="经度" width="120" />
+              <el-table-column prop="lat" label="纬度" width="120" />
+              <el-table-column label="操作" width="200" fixed="right">
+                <template #default="{ row }">
+                  <el-button type="warning" size="small" @click="openSectionDialog(row)">编辑</el-button>
+                  <el-button type="danger" size="small" @click="handleDeleteSection(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-empty v-if="!loading && sections.length === 0" description="暂无断面数据，请添加断面" />
           </div>
-          <el-table :data="sections" stripe v-loading="loading" border>
-            <el-table-column prop="id" label="ID" width="80" />
-            <el-table-column prop="name" label="断面名称" min-width="150" />
-            <el-table-column prop="description" label="描述" min-width="200" />
-            <el-table-column prop="lng" label="经度" width="120" />
-            <el-table-column prop="lat" label="纬度" width="120" />
-            <el-table-column prop="pos_x" label="X位置%" width="100" />
-            <el-table-column prop="pos_y" label="Y位置%" width="100" />
-            <el-table-column label="操作" width="200" fixed="right">
-              <template #default="{ row }">
-                <el-button type="primary" size="small" @click="openSectionDialog(row)">编辑</el-button>
-                <el-button type="danger" size="small" @click="handleDeleteSection(row)">删除</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
         </div>
 
-        <!-- 传感器管理表格 -->
-        <div v-if="currentView === 'sensor'" class="table-container">
-          <div class="table-toolbar">
-            <el-button type="primary" @click="openSensorDialog()">
-              <el-icon><Plus /></el-icon>
-              新增传感器
-            </el-button>
-            <el-button @click="loadSensors">
-              <el-icon><Refresh /></el-icon>
-              刷新
-            </el-button>
+        <!-- 传感器管理 (点击断面节点) -->
+        <div v-if="currentLevel === 'sensor'" class="content-container">
+          <!-- 断面信息卡片 -->
+          <el-card class="info-card" shadow="hover">
+            <template #header>
+              <div class="card-header">
+                <span class="card-title">
+                  <el-icon><Location /></el-icon>
+                  断面信息: {{ selectedSection?.name }}
+                </span>
+                <div class="card-actions">
+                  <el-button type="warning" size="small" @click="openSectionDialog(selectedSection)">
+                    <el-icon><Edit /></el-icon>
+                    编辑
+                  </el-button>
+                  <el-button type="danger" size="small" @click="handleDeleteSection(selectedSection)">
+                    <el-icon><Delete /></el-icon>
+                    删除
+                  </el-button>
+                </div>
+              </div>
+            </template>
+            <div class="info-content">
+              <div class="info-item">
+                <span class="info-label">所属桥梁:</span>
+                <span class="info-value">{{ selectedBridge?.name || '-' }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">描述:</span>
+                <span class="info-value">{{ selectedSection?.description || '-' }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">经度:</span>
+                <span class="info-value">{{ selectedSection?.lng || '-' }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">纬度:</span>
+                <span class="info-value">{{ selectedSection?.lat || '-' }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">X位置%:</span>
+                <span class="info-value">{{ selectedSection?.pos_x || '-' }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">Y位置%:</span>
+                <span class="info-value">{{ selectedSection?.pos_y || '-' }}</span>
+              </div>
+            </div>
+          </el-card>
+
+          <!-- 传感器列表 -->
+          <div class="table-container">
+            <div class="section-title">
+              <h3>传感器列表</h3>
+            </div>
+            <div class="table-toolbar">
+              <el-button type="primary" @click="openSensorDialog()">
+                <el-icon><Plus /></el-icon>
+                新增传感器
+              </el-button>
+              <el-button @click="loadSensors(selectedSection?.id)">
+                <el-icon><Refresh /></el-icon>
+                刷新
+              </el-button>
+            </div>
+            <el-table :data="sensors" stripe v-loading="loading" border>
+              <el-table-column prop="id" label="ID" width="80" />
+              <el-table-column prop="sensor_code" label="传感器编码" min-width="150" />
+              <el-table-column prop="sensor_name" label="传感器名称" min-width="150" />
+              <el-table-column prop="sensor_type" label="类型" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="getSensorTypeTag(row.sensor_type)">
+                    {{ getSensorTypeName(row.sensor_type) }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="unit" label="单位" width="80" />
+              <el-table-column prop="limit_max" label="上限" width="100" />
+              <el-table-column prop="limit_min" label="下限" width="100" />
+              <el-table-column label="操作" width="200" fixed="right">
+                <template #default="{ row }">
+                  <el-button type="warning" size="small" @click="openSensorDialog(row)">编辑</el-button>
+                  <el-button type="danger" size="small" @click="handleDeleteSensor(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-empty v-if="!loading && sensors.length === 0" description="暂无传感器数据，请添加传感器" />
           </div>
-          <el-table :data="sensors" stripe v-loading="loading" border>
-            <el-table-column prop="id" label="ID" width="80" />
-            <el-table-column prop="sensor_code" label="传感器编码" min-width="150" />
-            <el-table-column prop="sensor_name" label="传感器名称" min-width="150" />
-            <el-table-column prop="sensor_type" label="类型" width="100">
-              <template #default="{ row }">
-                <el-tag :type="getSensorTypeTag(row.sensor_type)">
-                  {{ getSensorTypeName(row.sensor_type) }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="unit" label="单位" width="80" />
-            <el-table-column prop="limit_max" label="上限" width="100" />
-            <el-table-column prop="limit_min" label="下限" width="100" />
-            <el-table-column label="操作" width="200" fixed="right">
-              <template #default="{ row }">
-                <el-button type="primary" size="small" @click="openSensorDialog(row)">编辑</el-button>
-                <el-button type="danger" size="small" @click="handleDeleteSensor(row)">删除</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
         </div>
       </div>
     </div>
@@ -259,7 +365,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, OfficeBuilding, Location, Monitor } from '@element-plus/icons-vue'
+import { Plus, Refresh, OfficeBuilding, Location, Monitor, Edit, Delete, Folder } from '@element-plus/icons-vue'
 import {
   getAllBridges,
   createBridge,
@@ -280,11 +386,9 @@ const loading = ref(false)
 const treeLoading = ref(false)
 const submitting = ref(false)
 
-const currentView = ref('bridge') // bridge | section | sensor
-const selectedBridgeId = ref(null)
-const selectedBridgeName = ref('')
-const selectedSectionId = ref(null)
-const selectedSectionName = ref('')
+const currentLevel = ref('bridge') // 'bridge' | 'section' | 'sensor'
+const selectedBridge = ref(null)   // 当前选中的桥梁对象
+const selectedSection = ref(null)  // 当前选中的断面对象
 
 const bridges = ref([])
 const sections = ref([])
@@ -357,14 +461,14 @@ const buildTreeData = async () => {
     const res = await getAllBridges()
     if (res.data.success) {
       const bridgesData = res.data.data
-      const tree = []
+      const bridgeNodes = []
       
       for (const bridge of bridgesData) {
         const bridgeNode = {
           key: `bridge-${bridge.id}`,
           label: bridge.name,
           type: 'bridge',
-          id: bridge.id,
+          data: bridge,
           children: []
         }
         
@@ -379,33 +483,9 @@ const buildTreeData = async () => {
                 key: `section-${section.id}`,
                 label: section.name,
                 type: 'section',
-                id: section.id,
-                bridgeId: bridge.id,
-                bridgeName: bridge.name,
+                data: section,
+                bridgeData: bridge,
                 children: []
-              }
-              
-              // 获取该断面的传感器
-              try {
-                const sensorsRes = await getSensorsBySection(section.id)
-                if (sensorsRes.data.success) {
-                  const sensorsData = sensorsRes.data.data
-                  
-                  for (const sensor of sensorsData) {
-                    sectionNode.children.push({
-                      key: `sensor-${sensor.id}`,
-                      label: sensor.sensor_name || sensor.sensor_code,
-                      type: 'sensor',
-                      id: sensor.id,
-                      sectionId: section.id,
-                      bridgeId: bridge.id,
-                      bridgeName: bridge.name,
-                      sectionName: section.name
-                    })
-                  }
-                }
-              } catch (err) {
-                console.error('获取传感器失败', err)
               }
               
               bridgeNode.children.push(sectionNode)
@@ -415,10 +495,18 @@ const buildTreeData = async () => {
           console.error('获取断面失败', err)
         }
         
-        tree.push(bridgeNode)
+        bridgeNodes.push(bridgeNode)
       }
       
-      treeData.value = tree
+      // 创建根节点
+      const rootNode = {
+        key: 'root',
+        label: '桥梁管理',
+        type: 'root',
+        children: bridgeNodes
+      }
+      
+      treeData.value = [rootNode]
     }
   } catch (err) {
     ElMessage.error('加载树形数据失败')
@@ -434,25 +522,38 @@ const refreshTree = () => {
 
 // ===================== 树节点点击 =====================
 const handleNodeClick = (data) => {
-  if (data.type === 'bridge') {
-    currentView.value = 'bridge'
-    selectedBridgeId.value = data.id
-    selectedBridgeName.value = data.label
+  if (data.type === 'root') {
+    // 点击"桥梁管理"根节点 → 显示所有桥梁列表
+    currentLevel.value = 'bridge'
+    selectedBridge.value = null
+    selectedSection.value = null
     loadBridges()
+  } else if (data.type === 'bridge') {
+    // 点击桥梁节点 → 显示桥梁信息 + 断面列表
+    currentLevel.value = 'section'
+    selectedBridge.value = data.data
+    selectedSection.value = null
+    loadSections(data.data.id)
   } else if (data.type === 'section') {
-    currentView.value = 'section'
-    selectedBridgeId.value = data.bridgeId
-    selectedBridgeName.value = data.bridgeName
-    selectedSectionId.value = data.id
-    selectedSectionName.value = data.label
-    loadSections()
-  } else if (data.type === 'sensor') {
-    currentView.value = 'sensor'
-    selectedBridgeId.value = data.bridgeId
-    selectedBridgeName.value = data.bridgeName
-    selectedSectionId.value = data.sectionId
-    selectedSectionName.value = data.sectionName
-    loadSensors()
+    // 点击断面节点 → 显示断面信息 + 传感器列表
+    currentLevel.value = 'sensor'
+    selectedBridge.value = data.bridgeData
+    selectedSection.value = data.data
+    loadSensors(data.data.id)
+  }
+}
+
+// 面包屑导航点击
+const goToLevel = (level) => {
+  if (level === 'bridge') {
+    currentLevel.value = 'bridge'
+    selectedBridge.value = null
+    selectedSection.value = null
+    loadBridges()
+  } else if (level === 'section') {
+    currentLevel.value = 'section'
+    selectedSection.value = null
+    loadSections(selectedBridge.value.id)
   }
 }
 
@@ -555,12 +656,13 @@ const handleDeleteBridge = (row) => {
 }
 
 // ===================== 断面管理 =====================
-const loadSections = async () => {
-  if (!selectedBridgeId.value) return
+const loadSections = async (bridgeId) => {
+  const targetBridgeId = bridgeId || selectedBridge.value?.id
+  if (!targetBridgeId) return
   
   loading.value = true
   try {
-    const res = await getSectionsByBridge(selectedBridgeId.value)
+    const res = await getSectionsByBridge(targetBridgeId)
     if (res.data.success) {
       sections.value = res.data.data
     }
@@ -577,7 +679,7 @@ const openSectionDialog = (row = null) => {
     sectionForm.value = { ...row }
   } else {
     resetSectionForm()
-    sectionForm.value.bridge_id = selectedBridgeId.value
+    sectionForm.value.bridge_id = selectedBridge.value?.id
   }
   sectionDialogVisible.value = true
 }
@@ -659,12 +761,13 @@ const handleDeleteSection = (row) => {
 }
 
 // ===================== 传感器管理 =====================
-const loadSensors = async () => {
-  if (!selectedSectionId.value) return
+const loadSensors = async (sectionId) => {
+  const targetSectionId = sectionId || selectedSection.value?.id
+  if (!targetSectionId) return
   
   loading.value = true
   try {
-    const res = await getSensorsBySection(selectedSectionId.value)
+    const res = await getSensorsBySection(targetSectionId)
     if (res.data.success) {
       sensors.value = res.data.data
     }
@@ -681,7 +784,7 @@ const openSensorDialog = (row = null) => {
     sensorForm.value = { ...row }
   } else {
     resetSensorForm()
-    sensorForm.value.section_id = selectedSectionId.value
+    sensorForm.value.section_id = selectedSection.value?.id
   }
   sensorDialogVisible.value = true
 }
@@ -823,7 +926,7 @@ onMounted(() => {
 }
 
 .tree-panel {
-  width: 300px;
+  width: 280px;
   background: white;
   border-radius: 4px;
   overflow: hidden;
@@ -858,6 +961,11 @@ onMounted(() => {
   gap: 8px;
 }
 
+.root-icon {
+  color: #409eff;
+  font-weight: bold;
+}
+
 .node-label {
   font-size: 14px;
 }
@@ -876,10 +984,86 @@ onMounted(() => {
   border-bottom: 1px solid #e4e7ed;
 }
 
-.table-container {
+.breadcrumb :deep(.el-breadcrumb__item .clickable) {
+  cursor: pointer;
+  color: #409eff;
+  font-weight: normal;
+}
+
+.breadcrumb :deep(.el-breadcrumb__item .clickable:hover) {
+  text-decoration: underline;
+}
+
+.content-container {
   flex: 1;
   padding: 20px;
   overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.info-card {
+  margin-bottom: 0;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 500;
+  color: #303133;
+}
+
+.card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.info-content {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+.info-item {
+  display: flex;
+  gap: 8px;
+}
+
+.info-label {
+  color: #909399;
+  font-size: 14px;
+  min-width: 80px;
+}
+
+.info-value {
+  color: #303133;
+  font-size: 14px;
+  word-break: break-all;
+}
+
+.table-container {
+  flex: 1;
+  overflow: auto;
+}
+
+.section-title {
+  margin-bottom: 16px;
+}
+
+.section-title h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #303133;
+  font-weight: 500;
 }
 
 .table-toolbar {
@@ -896,5 +1080,9 @@ onMounted(() => {
   background: #f5f7fa;
   color: #606266;
   font-weight: 500;
+}
+
+:deep(.el-empty) {
+  padding: 40px 0;
 }
 </style>
