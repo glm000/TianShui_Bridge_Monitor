@@ -135,7 +135,7 @@
                 <el-icon><Plus /></el-icon>
                 新增断面
               </el-button>
-              <el-button @click="loadSections()">
+              <el-button @click="loadSections(selectedBridge?.id)">
                 <el-icon><Refresh /></el-icon>
                 刷新
               </el-button>
@@ -217,7 +217,7 @@
                 <el-icon><Plus /></el-icon>
                 新增传感器
               </el-button>
-              <el-button @click="loadSensors()">
+              <el-button @click="loadSensors(selectedSection?.id)">
                 <el-icon><Refresh /></el-icon>
                 刷新
               </el-button>
