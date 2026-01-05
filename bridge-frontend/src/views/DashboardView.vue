@@ -546,7 +546,7 @@ onUnmounted(() => {
   <div class="screen">
     <header class="topbar">
       <div class="top-left">
-        <span class="label">当前时间</span>
+        <span class="label">当前时间：</span>
         <span class="mono">{{ currentTime }}</span>
         <span class="muted">最后刷新：{{ lastRefreshTime || '--' }}</span>
       </div>
@@ -716,13 +716,13 @@ onUnmounted(() => {
 
 .label {
   color: rgba(160, 180, 206, 0.95);
-  font-size: 13px;
+  font-size: 16px;
   white-space: nowrap;
 }
 
 .muted {
   color: rgba(160, 180, 206, 0.75);
-  font-size: 12px;
+  font-size: 16px;
   white-space: nowrap;
 }
 
@@ -730,6 +730,7 @@ onUnmounted(() => {
   font-family: 'Courier New', monospace;
   color: rgba(160, 180, 206, 0.95);
   white-space: nowrap;
+  margin: 0;
 }
 
 .grid {

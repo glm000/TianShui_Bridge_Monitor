@@ -158,7 +158,6 @@
       <div class="table-section panel-box">
         <div class="panel-header">
           <span class="panel-title">明细列表</span>
-          <el-tag size="small" type="info" effect="plain" round>TOP {{ pagination.total > 1000 ? 1000 : pagination.total }}</el-tag>
         </div>
 
         <div class="table-wrapper" ref="tableBodyEl">

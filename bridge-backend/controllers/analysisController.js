@@ -55,7 +55,8 @@ exports.getHistory = async (req, res) => {
     }
 
     // 获取总数
-    const countSql = sql.replace(/SELECT .+ FROM/, 'SELECT COUNT(*) as total FROM')
+    // 使用 [\s\S]+ 来匹配包括换行符在内的所有字符
+    const countSql = sql.replace(/SELECT [\s\S]+ FROM/, 'SELECT COUNT(*) as total FROM')
     const [[{ total }]] = await db.query(countSql, params)
 
     // 获取分页数据
@@ -85,7 +86,7 @@ exports.getHistory = async (req, res) => {
 exports.getStatistics = async (req, res) => {
   try {
     const { sensorCode, startTime, endTime } = req.query
-    
+
     if (!sensorCode) {
       return res.status(400).json({ success: false, msg: '缺少 sensorCode 参数' })
     }
@@ -115,11 +116,8 @@ exports.getStatistics = async (req, res) => {
     const stats = rows[0]
 
     // 获取传感器限值信息
-    const [sensorInfo] = await db.query(
-      'SELECT limit_max, limit_min, unit FROM sensors WHERE sensor_code = ?',
-      [sensorCode]
-    )
-    
+    const [sensorInfo] = await db.query('SELECT limit_max, limit_min, unit FROM sensors WHERE sensor_code = ?', [sensorCode])
+
     // 计算超限次数
     let exceedSql = `
       SELECT COUNT(*) as exceed_count
@@ -128,7 +126,7 @@ exports.getStatistics = async (req, res) => {
       WHERE sd.sensor_code = ?
     `
     const exceedParams = [sensorCode]
-    
+
     if (sensorInfo[0]) {
       const { limit_max, limit_min } = sensorInfo[0]
       const conditions = []
@@ -180,7 +178,7 @@ exports.getStatistics = async (req, res) => {
 exports.getTrend = async (req, res) => {
   try {
     const { sensorCode, startTime, endTime, granularity = 'hour' } = req.query
-    
+
     if (!sensorCode) {
       return res.status(400).json({ success: false, msg: '缺少 sensorCode 参数' })
     }
@@ -246,7 +244,7 @@ exports.getTrend = async (req, res) => {
 exports.getDistribution = async (req, res) => {
   try {
     const { sensorCode, startTime, endTime, bins = 10 } = req.query
-    
+
     if (!sensorCode) {
       return res.status(400).json({ success: false, msg: '缺少 sensorCode 参数' })
     }
@@ -308,7 +306,7 @@ exports.getDistribution = async (req, res) => {
       const rangeStart = minVal + i * binWidth
       const rangeEnd = i === bins - 1 ? maxVal : rangeStart + binWidth
       const found = rows.find(r => parseInt(r.bin_index) === i)
-      
+
       distribution.push({
         range: `${rangeStart.toFixed(2)}-${rangeEnd.toFixed(2)}`,
         rangeStart: parseFloat(rangeStart.toFixed(2)),
@@ -330,12 +328,15 @@ exports.getDistribution = async (req, res) => {
 exports.getCompare = async (req, res) => {
   try {
     const { sensorCodes, startTime, endTime, granularity = 'hour' } = req.query
-    
+
     if (!sensorCodes) {
       return res.status(400).json({ success: false, msg: '缺少 sensorCodes 参数' })
     }
 
-    const codes = sensorCodes.split(',').map(c => c.trim()).filter(c => c)
+    const codes = sensorCodes
+      .split(',')
+      .map(c => c.trim())
+      .filter(c => c)
     if (codes.length === 0) {
       return res.status(400).json({ success: false, msg: 'sensorCodes 格式错误' })
     }
@@ -379,12 +380,9 @@ exports.getCompare = async (req, res) => {
       sql += ' GROUP BY time_group ORDER BY time_group ASC'
 
       const [rows] = await db.query(sql, params)
-      
+
       // 获取传感器名称
-      const [[sensor]] = await db.query(
-        'SELECT sensor_name, unit FROM sensors WHERE sensor_code = ?',
-        [code]
-      )
+      const [[sensor]] = await db.query('SELECT sensor_name, unit FROM sensors WHERE sensor_code = ?', [code])
 
       result[code] = {
         sensorName: sensor?.sensor_name || code,
@@ -614,7 +612,7 @@ exports.exportData = async (req, res) => {
     // 构建CSV内容
     const headers = Object.keys(rows[0])
     let csv = headers.join(',') + '\n'
-    
+
     rows.forEach(row => {
       const values = headers.map(header => {
         const value = row[header]
